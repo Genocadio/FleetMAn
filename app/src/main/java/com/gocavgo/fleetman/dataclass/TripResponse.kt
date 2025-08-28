@@ -64,6 +64,7 @@ data class TripWaypoint(
 data class CreateTripRequest(
     val route_id: Int,
     val vehicle_id: Int,
+    val price: Double,
     val departure_time: Long,
     val connection_mode: String,
     val notes: String? = null,
@@ -77,12 +78,17 @@ data class CreateCustomWaypoint(
     val location_id: Int,
     val order: Int,
     val price: Double? = null,
-    val remaining_time: Long? = null,
-    val remaining_distance: Double? = null
 )
 
 @Serializable
 data class PaginatedTripsResponse(
-    val data: List<TripResponse>,
-    val pagination: PaginationInfo
+    val trips: List<TripResponse>,
+    val total: Int,
+    val limit: Int,
+    val offset: Int
+)
+
+@Serializable
+data class TripsListResponse(
+    val trips: List<TripResponse>
 )

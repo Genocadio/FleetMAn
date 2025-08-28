@@ -10,6 +10,7 @@ import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
+import kotlin.div
 
 /**
  * Manages remote operations for places, routes, and trips.
@@ -86,6 +87,52 @@ class RemoteDataManager {
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to fetch vehicles: ${e.message}", e)
                 RemoteResult.Error("Failed to fetch vehicles: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Delete a trip
+     * @param tripId ID of the trip to delete
+     * @return RemoteResult indicating success or error
+     */
+    suspend fun deleteTrip(tripId: Int): RemoteResult<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "=== DELETING TRIP $tripId FROM REMOTE ===")
+
+                val url = "$TRIPS_BASE_URL/$tripId"
+                Log.d(TAG, "Request URL: $url")
+
+                val request = Request.Builder()
+                    .url(url)
+                    .delete()
+                    .addHeader("Accept", "application/json")
+                    .addHeader("Content-Type", "application/json")
+                    .build()
+
+                val response = httpClient.newCall(request).execute()
+
+                response.use { resp ->
+                    if (resp.isSuccessful) {
+                        Log.d(TAG, "Trip $tripId deleted successfully")
+                        RemoteResult.Success(Unit)
+                    } else {
+                        val errorBody = resp.body?.string() ?: "Unknown error"
+                        Log.e(
+                            TAG,
+                            "Failed to delete trip. Response code: ${resp.code}, Error: $errorBody"
+                        )
+                        RemoteResult.Error("Failed to delete trip: HTTP ${resp.code} - $errorBody")
+                    }
+                }
+
+            } catch (e: IOException) {
+                Log.e(TAG, "Network error while deleting trip: ${e.message}", e)
+                RemoteResult.Error("Network error: ${e.message}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to delete trip: ${e.message}", e)
+                RemoteResult.Error("Failed to delete trip: ${e.message}")
             }
         }
     }
@@ -259,11 +306,11 @@ class RemoteDataManager {
      * @param limit Number of items per page (default: 20)
      * @return RemoteResult containing paginated list of TripResponse objects
      */
-    suspend fun getVehicleTrips(
+   suspend fun getVehicleTrips(
         vehicleId: Int,
         page: Int = 1,
         limit: Int = 20
-    ): RemoteResult<PaginatedResult<List<TripResponse>>> {
+    ): RemoteResult<RemoteDataManager.PaginatedResult<List<TripResponse>>> {
         return withContext(Dispatchers.IO) {
             try {
                 Log.d(TAG, "=== FETCHING TRIPS FOR VEHICLE $vehicleId FROM REMOTE ===")
@@ -292,18 +339,24 @@ class RemoteDataManager {
 
                         val paginatedResponse = json.decodeFromString<PaginatedTripsResponse>(responseBody)
 
+                        val pagination = PaginationInfo(
+                            total = paginatedResponse.total,
+                            total_pages = (paginatedResponse.total + paginatedResponse.limit - 1) / paginatedResponse.limit,
+                            page = (paginatedResponse.offset / paginatedResponse.limit) + 1,
+                            limit = paginatedResponse.limit,
+                            has_next = (paginatedResponse.offset + paginatedResponse.limit) < paginatedResponse.total,
+                            has_prev = paginatedResponse.offset > 0
+                        )
+                        val paginatedResult = RemoteDataManager.PaginatedResult(
+                            data = paginatedResponse.trips,
+                            pagination = pagination
+                        )
                         Log.d(
                             TAG,
-                            "Retrieved ${paginatedResponse.data.size} trips for vehicle $vehicleId (page $page of ${paginatedResponse.pagination.total_pages})"
+                            "Retrieved ${paginatedResponse.trips.size} trips for vehicle $vehicleId (page ${pagination.page} of ${pagination.total_pages})"
                         )
-                        Log.d(TAG, "Total trips: ${paginatedResponse.pagination.total}")
+                        Log.d(TAG, "Total trips: ${pagination.total}")
                         Log.d(TAG, "===============================")
-
-                        val paginatedResult = PaginatedResult(
-                            data = paginatedResponse.data,
-                            pagination = paginatedResponse.pagination
-                        )
-
                         RemoteResult.Success(paginatedResult)
                     } else {
                         val errorBody = resp.body?.string() ?: "Unknown error"
