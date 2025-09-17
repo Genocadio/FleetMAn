@@ -75,7 +75,9 @@ class CreateTripActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        remoteDataManager.cleanup()
+        lifecycleScope.launch {
+            remoteDataManager.cleanup()
+        }
     }
 }
 
