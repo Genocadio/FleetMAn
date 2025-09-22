@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
@@ -19,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.lifecycle.lifecycleScope
@@ -145,22 +148,71 @@ private fun SearchableRouteDropdown(
     routes: List<SaveRouteResponse>,
     selectedRoute: SaveRouteResponse?,
     onRouteSelected: (SaveRouteResponse?) -> Unit,
-    isLoading: Boolean
+    isLoading: Boolean,
+    remoteDataManager: RemoteDataManager,
+    lifecycleScope: kotlinx.coroutines.CoroutineScope,
+    activity: CreateTripActivity
 ) {
     var searchText by remember { mutableStateOf("") }
     var showSuggestions by remember { mutableStateOf(false) }
+    var searchFilters by remember { mutableStateOf(RouteSearchFilters()) }
+    var isSearching by remember { mutableStateOf(false) }
+    var searchResults by remember { mutableStateOf<List<SaveRouteResponse>>(emptyList()) }
 
-    val filteredRoutes = remember(routes, searchText) {
-        if (searchText.isBlank()) {
-            emptyList()
+    // Parse search text into filters
+    val currentFilters = remember(searchText) {
+        RouteSearchParser.parseSearchText(searchText)
+    }
+
+    // Load search results when filters change
+    LaunchedEffect(currentFilters) {
+        if (searchText.isNotBlank()) {
+            isSearching = true
+            searchFilters = currentFilters
+            
+            when (val result = remoteDataManager.getRoutes(
+                origin = currentFilters.origin,
+                destination = currentFilters.destination,
+                cityRoute = currentFilters.cityRoute,
+                page = 1,
+                limit = 50
+            )) {
+                is RemoteResult.Success -> {
+                    searchResults = result.data.data
+                }
+                is RemoteResult.Error -> {
+                    activity.showErrorToast(
+                        message = "Search failed: ${result.message}",
+                        title = "Search Error"
+                    )
+                    searchResults = emptyList()
+                }
+            }
+            isSearching = false
         } else {
-            routes.filter { route ->
-                val origin = route.origin.custom_name ?: route.origin.google_place_name
-                val destination =
-                    route.destination.custom_name ?: route.destination.google_place_name
-                origin.contains(searchText, ignoreCase = true) ||
-                        destination.contains(searchText, ignoreCase = true)
-            }.take(10) // Limit to 10 suggestions for better performance
+            searchResults = emptyList()
+            searchFilters = RouteSearchFilters()
+        }
+    }
+
+    val filteredRoutes = remember(searchResults, searchText) {
+        if (searchText.isBlank()) {
+            // Show some default routes when search is empty
+            routes.take(5)
+        } else {
+            // If we have search results from API, use them
+            // Otherwise fall back to local filtering
+            if (searchResults.isNotEmpty()) {
+                searchResults.take(10)
+            } else {
+                routes.filter { route ->
+                    val origin = route.origin.custom_name ?: route.origin.google_place_name
+                    val destination =
+                        route.destination.custom_name ?: route.destination.google_place_name
+                    origin.contains(searchText, ignoreCase = true) ||
+                            destination.contains(searchText, ignoreCase = true)
+                }.take(10)
+            }
         }
     }
 
@@ -177,7 +229,7 @@ private fun SearchableRouteDropdown(
                     showSuggestions = it.isNotBlank()
                 },
                 label = { Text("Search Routes") },
-                placeholder = { Text("Type to search routes...") },
+                placeholder = { Text(RouteSearchParser.getPlaceholderText(searchFilters)) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 interactionSource = interactionSource
@@ -185,72 +237,51 @@ private fun SearchableRouteDropdown(
             
             // Update suggestions visibility based on focus and text
             LaunchedEffect(isFocused, searchText) {
-                showSuggestions = isFocused && searchText.isNotBlank()
+                showSuggestions = isFocused && (searchText.isNotBlank() || routes.isNotEmpty())
             }
 
-            // Auto-suggestions dropdown
-            if (showSuggestions && filteredRoutes.isNotEmpty()) {
+            // Search status indicator
+            if (searchText.isNotBlank() && searchFilters != RouteSearchFilters()) {
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .offset(y = 56.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                        .offset(y = 56.dp)
+                        .zIndex(8f), // Lower than suggestions but above other content
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
                     )
                 ) {
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = 300.dp),
-                        contentPadding = PaddingValues(vertical = 8.dp)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        if (isLoading) {
-                            item {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp))
-                                    Text("Loading routes...")
-                                }
-                            }
-                        } else {
-                            items(filteredRoutes) { route ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(
-                                                text = "${route.origin.custom_name ?: route.origin.google_place_name} → ${route.destination.custom_name ?: route.destination.google_place_name}",
-                                                fontSize = 14.sp,
-                                                fontWeight = FontWeight.Normal
-                                            )
-                                            Text(
-                                                text = "Route ID: ${route.id} | Distance: ${route.distance_meters}m | Duration: ${route.estimated_duration_seconds}s",
-                                                fontSize = 12.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            if (route.city_route) {
-                                                Text(
-                                                    text = "City Route",
-                                                    fontSize = 10.sp,
-                                                    color = MaterialTheme.colorScheme.primary,
-                                                    fontWeight = FontWeight.Medium
-                                                )
-                                            }
-                                        }
-                                    },
-                                    onClick = {
-                                        onRouteSelected(route)
-                                        searchText = ""
-                                        showSuggestions = false
-                                    }
-                                )
-                            }
-                        }
+                        Text(
+                            text = "🔍 ${RouteSearchParser.getSearchDescription(searchFilters)}",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     }
                 }
+            }
+
+            // True popup suggestions - appears outside card boundaries
+            if (showSuggestions && (filteredRoutes.isNotEmpty() || isSearching)) {
+                // This will be rendered outside the card using a separate composable
+                RouteSearchPopup(
+                    searchText = searchText,
+                    searchFilters = searchFilters,
+                    filteredRoutes = filteredRoutes,
+                    isSearching = isSearching,
+                    onRouteSelected = { route ->
+                        onRouteSelected(route)
+                        searchText = ""
+                        showSuggestions = false
+                    },
+                    onDismiss = { showSuggestions = false }
+                )
             }
         }
     } else {
@@ -295,6 +326,378 @@ private fun SearchableRouteDropdown(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchableLocationDropdown(
+    selectedLocation: SavePlaceResponse?,
+    onLocationSelected: (SavePlaceResponse?) -> Unit,
+    isLoading: Boolean,
+    remoteDataManager: RemoteDataManager,
+    lifecycleScope: kotlinx.coroutines.CoroutineScope,
+    activity: CreateTripActivity,
+    label: String = "Location"
+) {
+    var searchText by remember { mutableStateOf("") }
+    var showSuggestions by remember { mutableStateOf(false) }
+    var searchResults by remember { mutableStateOf<List<SavePlaceResponse>>(emptyList()) }
+    var isSearching by remember { mutableStateOf(false) }
+    var internalSelectedLocation by remember { mutableStateOf<SavePlaceResponse?>(selectedLocation) }
+    
+    // Update internal selected location when prop changes
+    LaunchedEffect(selectedLocation) {
+        internalSelectedLocation = selectedLocation
+        if (selectedLocation != null && searchText.isEmpty()) {
+            searchText = selectedLocation.custom_name ?: selectedLocation.google_place_name
+        }
+    }
+
+    // Load search results when search text changes
+    LaunchedEffect(searchText) {
+        if (searchText.isNotBlank() && searchText.length >= 2) { // Minimum 2 characters to search
+            isSearching = true
+            Log.d("SearchableLocationDropdown", "Searching for: $searchText")
+            
+            when (val result = remoteDataManager.getLocations(
+                search = searchText,
+                page = 1,
+                limit = 20
+            )) {
+                is RemoteResult.Success -> {
+                    searchResults = result.data.data
+                    Log.d("SearchableLocationDropdown", "Found ${searchResults.size} locations")
+                }
+                is RemoteResult.Error -> {
+                    activity.showErrorToast(
+                        message = "Search failed: ${result.message}",
+                        title = "Search Error"
+                    )
+                    searchResults = emptyList()
+                    showSuggestions = false
+                }
+            }
+            isSearching = false
+        } else {
+            searchResults = emptyList()
+            showSuggestions = false
+        }
+    }
+
+    Log.d("SearchableLocationDropdown", "selectedLocation: $selectedLocation, internalSelectedLocation: $internalSelectedLocation, showing search input: ${internalSelectedLocation == null}")
+    if (internalSelectedLocation == null) {
+        // Show search input with auto-suggestions
+        Box(modifier = Modifier.fillMaxWidth()) {
+            val interactionSource = remember { MutableInteractionSource() }
+            val isFocused by interactionSource.collectIsFocusedAsState()
+            
+            OutlinedTextField(
+                value = searchText,
+                onValueChange = { 
+                    searchText = it
+                    showSuggestions = it.isNotBlank()
+                    Log.d("SearchableLocationDropdown", "Text changed to: '$it', showSuggestions: $showSuggestions")
+                },
+                label = { Text(label) },
+                placeholder = { Text("Type to search locations...") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                interactionSource = interactionSource,
+                trailingIcon = {
+                    if (isSearching) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
+                }
+            )
+            
+            // Update suggestions visibility based on focus and text
+            LaunchedEffect(isFocused, searchText) {
+                showSuggestions = isFocused && searchText.isNotBlank()
+            }
+
+            // Auto-suggestions dropdown - position above input for keyboard visibility
+            Log.d("SearchableLocationDropdown", "showSuggestions: $showSuggestions, searchResults.size: ${searchResults.size}, isSearching: $isSearching")
+            if (showSuggestions && (searchResults.isNotEmpty() || isSearching)) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .offset(y = 56.dp) // Position below the input field
+                        .zIndex(10f), // Lower than route search to avoid conflicts
+                    elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
+                ) {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 300.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        if (isSearching) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                                    Text("Searching locations...")
+                                }
+                            }
+                        } else if (searchResults.isEmpty()) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "No locations found matching your search",
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        } else {
+                            items(searchResults) { location ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(
+                                                text = location.custom_name ?: location.google_place_name,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Normal
+                                            )
+                                            Text(
+                                                text = "${location.district}, ${location.province}",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        Log.d("SearchableLocationDropdown", "Location selected: ${location.custom_name ?: location.google_place_name} (ID: ${location.id})")
+                                        internalSelectedLocation = location
+                                        onLocationSelected(location)
+                                        showSuggestions = false
+                                        // Update search text to show the selected location
+                                        searchText = location.custom_name ?: location.google_place_name
+                                        Log.d("SearchableLocationDropdown", "After selection - internalSelectedLocation set, searchText: $searchText")
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Show selected location with clear button
+        Log.d("SearchableLocationDropdown", "Showing selected location card for: ${internalSelectedLocation?.custom_name ?: internalSelectedLocation?.google_place_name}")
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer
+            ),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = internalSelectedLocation?.custom_name ?: internalSelectedLocation?.google_place_name ?: "Unknown Location",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Text(
+                        text = "${internalSelectedLocation?.district ?: ""}, ${internalSelectedLocation?.province ?: ""}",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+                
+                IconButton(
+                    onClick = { 
+                        Log.d("SearchableLocationDropdown", "Clearing location selection")
+                        internalSelectedLocation = null
+                        onLocationSelected(null)
+                        searchText = ""
+                        showSuggestions = false
+                        searchResults = emptyList()
+                    },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Text(
+                        text = "✕",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RouteSearchPopup(
+    searchText: String,
+    searchFilters: RouteSearchFilters,
+    filteredRoutes: List<SaveRouteResponse>,
+    isSearching: Boolean,
+    onRouteSelected: (SaveRouteResponse) -> Unit,
+    onDismiss: () -> Unit
+) {
+    // This popup renders outside the card boundaries
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(100f) // Very high z-index to appear over everything
+    ) {
+        // Semi-transparent overlay to catch clicks outside
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable { onDismiss() }
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = Color.Black.copy(alpha = 0.3f)
+            ) {}
+        }
+        
+        // Popup content positioned at the top
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+                .offset(y = 100.dp), // Position below the search field
+            shadowElevation = 16.dp,
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 400.dp) // Scrollable height
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Search Results",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    TextButton(onClick = onDismiss) {
+                        Text("✕", fontSize = 18.sp)
+                    }
+                }
+                
+                Divider()
+                
+                // Scrollable content
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    if (isSearching) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                                Text("Searching routes...")
+                            }
+                        }
+                    } else if (filteredRoutes.isEmpty()) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = if (searchText.isBlank()) 
+                                        "No routes available. Try searching for specific routes."
+                                    else 
+                                        "No routes found matching your search",
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    } else {
+                        items(filteredRoutes) { route ->
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                                color = Color.Transparent
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            onRouteSelected(route)
+                                        }
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "${route.origin.custom_name ?: route.origin.google_place_name} → ${route.destination.custom_name ?: route.destination.google_place_name}",
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Normal,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "Route ID: ${route.id} | Distance: ${route.distance_meters}m | Duration: ${route.estimated_duration_seconds}s",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        if (route.city_route) {
+                                            Text(
+                                                text = "City Route",
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -406,19 +809,37 @@ private fun ViewTripsTab(
             when (val result = remoteDataManager.deleteTrip(tripId)) {
                 is RemoteResult.Success -> {
                     // Show success toast
+                    val tripStatus = trips.find { it.id == tripId }?.status
+                    val action = when (tripStatus) {
+                        "IN_PROGRESS" -> "canceled"
+                        "CANCELLED" -> "deleted"
+                        else -> "deleted"
+                    }
                     activity.showSuccessToast(
-                        message = "Trip #$tripId deleted successfully",
-                        title = "Trip Deleted"
+                        message = "Trip #$tripId $action successfully",
+                        title = if (action == "canceled") "Trip Canceled" else "Trip Deleted"
                     )
-                    // Remove the deleted trip from the list
-                    trips = trips.filter { it.id != tripId }
+                    
+                    // For IN_PROGRESS trips, refresh the list to show updated status
+                    // For other trips, remove from list
+                    if (tripStatus == "IN_PROGRESS") {
+                        loadTrips(1) // Refresh the list to show updated status
+                    } else {
+                        trips = trips.filter { it.id != tripId }
+                    }
                 }
 
                 is RemoteResult.Error -> {
                     // Show error toast
+                    val tripStatus = trips.find { it.id == tripId }?.status
+                    val action = when (tripStatus) {
+                        "IN_PROGRESS" -> "cancel"
+                        "CANCELLED" -> "delete"
+                        else -> "delete"
+                    }
                     activity.showErrorToast(
-                        message = "Failed to delete trip: ${result.message}",
-                        title = "Delete Failed"
+                        message = "Failed to $action trip: ${result.message}",
+                        title = if (action == "cancel") "Cancel Failed" else "Delete Failed"
                     )
                 }
             }
@@ -543,7 +964,9 @@ private fun TripCard(
                             containerColor = when (trip.status) {
                                 "SCHEDULED" -> MaterialTheme.colorScheme.primaryContainer
                                 "ACTIVE" -> MaterialTheme.colorScheme.secondaryContainer
+                                "IN_PROGRESS" -> MaterialTheme.colorScheme.secondaryContainer
                                 "COMPLETED" -> MaterialTheme.colorScheme.tertiaryContainer
+                                "CANCELLED" -> MaterialTheme.colorScheme.errorContainer
                                 else -> MaterialTheme.colorScheme.surfaceVariant
                             }
                         )
@@ -556,8 +979,8 @@ private fun TripCard(
                         )
                     }
 
-                    // Delete button - only show for SCHEDULED trips
-                    if (trip.status == "SCHEDULED") {
+                    // Delete button - show for SCHEDULED, IN_PROGRESS, and CANCELLED trips
+                    if (trip.status == "SCHEDULED" || trip.status == "IN_PROGRESS" || trip.status == "CANCELLED") {
                         IconButton(
                             onClick = { showDeleteDialog = true },
                             modifier = Modifier.size(32.dp)
@@ -622,9 +1045,23 @@ private fun TripCard(
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
-            title = { Text("Delete Trip") },
+            title = { 
+                Text(
+                    when (trip.status) {
+                        "IN_PROGRESS" -> "Cancel Trip"
+                        "CANCELLED" -> "Delete Trip"
+                        else -> "Delete Trip"
+                    }
+                ) 
+            },
             text = {
-                Text("Are you sure you want to delete Trip #${trip.id}? This action cannot be undone.")
+                Text(
+                    when (trip.status) {
+                        "IN_PROGRESS" -> "Are you sure you want to cancel Trip #${trip.id}? This will cancel the trip and then delete it."
+                        "CANCELLED" -> "Are you sure you want to permanently delete Trip #${trip.id}? This action cannot be undone."
+                        else -> "Are you sure you want to delete Trip #${trip.id}? This action cannot be undone."
+                    }
+                )
             },
             confirmButton = {
                 TextButton(
@@ -633,7 +1070,14 @@ private fun TripCard(
                         onDeleteTrip(trip.id)
                     }
                 ) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                    Text(
+                        when (trip.status) {
+                            "IN_PROGRESS" -> "Cancel"
+                            "CANCELLED" -> "Delete"
+                            else -> "Delete"
+                        }, 
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
             },
             dismissButton = {
@@ -714,23 +1158,8 @@ private fun CreateTripTab(
         }
     }
 
-    // Load routes and locations on first composition
+    // Load locations on first composition (routes will be loaded via search)
     LaunchedEffect(Unit) {
-        // Load routes
-        lifecycleScope.launch {
-            isLoadingRoutes = true
-            when (val result = remoteDataManager.getRoutes(page = 1, limit = 100)) {
-                is RemoteResult.Success -> routes = result.data.data
-                is RemoteResult.Error -> {
-                    activity.showErrorToast(
-                        message = "Failed to load routes: ${result.message}",
-                        title = "Load Error"
-                    )
-                }
-            }
-            isLoadingRoutes = false
-        }
-
         // Load locations
         lifecycleScope.launch {
             isLoadingLocations = true
@@ -740,7 +1169,7 @@ private fun CreateTripTab(
                     activity.showErrorToast(
                         message = "Failed to load locations: ${result.message}",
                         title = "Load Error"
-                )
+                    )
                 }
             }
             isLoadingLocations = false
@@ -815,11 +1244,15 @@ private fun CreateTripTab(
     }
 
     // Get available locations for waypoints (excluding route origin and destination)
-    val availableLocations = remember(displayRoute, locations) {
+    val availableLocations = remember(displayRoute, locations, customWaypoints) {
         displayRoute?.let { route ->
-            locations.filter { location ->
+            val filteredLocations = locations.filter { location ->
                 location.id != route.origin_id && location.id != route.destination_id
             }
+            // Include any already selected locations from custom waypoints
+            val selectedLocationIds = customWaypoints.map { it.location_id }.filter { it > 0 }
+            val selectedLocations = locations.filter { it.id in selectedLocationIds }
+            (filteredLocations + selectedLocations).distinctBy { it.id }
         } ?: locations
     }
 
@@ -846,8 +1279,9 @@ private fun CreateTripTab(
                             routes = routes,
                             selectedRoute = selectedRoute,
                             onRouteSelected = {
+                                Log.d("CreateTripTab", "Route selected: ${it?.id}")
                                 selectedRoute = it
-                                customWaypoints = emptyList()
+                                // Don't clear custom waypoints - let user decide if they want to override
                                 // Reset reverse state when new route is selected
                                 isReversed = false
                                 
@@ -859,8 +1293,12 @@ private fun CreateTripTab(
                                     )
                                 }
                             },
-                            isLoading = isLoadingRoutes
+                            isLoading = isLoadingRoutes,
+                            remoteDataManager = remoteDataManager,
+                            lifecycleScope = lifecycleScope,
+                            activity = activity
                         )
+
 
                         // Show selected route details (using displayRoute for reversed view)
                         displayRoute?.let { route ->
@@ -1168,22 +1606,42 @@ private fun CreateTripTab(
                                    }
                                }
 
-                               TextButton(
-                                   onClick = {
-                                       customWaypoints = customWaypoints + CreateCustomWaypoint(
-                                           location_id = 0,
-                                           order = customWaypoints.size,
-                                           price = null
-                                       )
-                                       
-                                       // Show info toast when waypoint is added
-                                       activity.showInfoToast(
-                                           message = "Custom waypoint added. Please select a location.",
-                                           title = "Waypoint Added"
-                                       )
+                               Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                   TextButton(
+                                       onClick = {
+                                           val newWaypoint = CreateCustomWaypoint(
+                                               location_id = 0,
+                                               order = customWaypoints.size,
+                                               price = null
+                                           )
+                                           customWaypoints = customWaypoints + newWaypoint
+                                           Log.d("CreateTripTab", "Added new waypoint: $newWaypoint")
+                                           Log.d("CreateTripTab", "Custom waypoints after addition: $customWaypoints")
+                                           
+                                           // Show info toast when waypoint is added
+                                           activity.showInfoToast(
+                                               message = "Custom waypoint added. Please select a location.",
+                                               title = "Waypoint Added"
+                                           )
+                                       }
+                                   ) {
+                                       Text("+ Add Custom")
                                    }
-                               ) {
-                                   Text("+ Add Custom")
+                                   
+                                   if (customWaypoints.isNotEmpty()) {
+                                       TextButton(
+                                           onClick = {
+                                               Log.d("CreateTripTab", "Clearing all custom waypoints")
+                                               customWaypoints = emptyList()
+                                               activity.showInfoToast(
+                                                   message = "Custom waypoints cleared. Using route defaults.",
+                                                   title = "Waypoints Cleared"
+                                               )
+                                           }
+                                       ) {
+                                           Text("Clear All", color = MaterialTheme.colorScheme.error)
+                                       }
+                                   }
                                }
                            }
 
@@ -1259,13 +1717,28 @@ private fun CreateTripTab(
                                        waypoint = waypoint,
                                        index = index,
                                        availableLocations = availableLocations,
+                                       allLocations = locations,
                                        isLoadingLocations = isLoadingLocations,
                                        canMoveUp = index > 0,
                                        canMoveDown = index < customWaypoints.size - 1,
                                        onLocationChanged = { locationId ->
+                                           Log.d("CustomWaypointCard", "Location changed for waypoint $index: locationId = $locationId")
                                            customWaypoints = customWaypoints.mapIndexed { i, wp ->
-                                               if (i == index) wp.copy(location_id = locationId)
-                                               else wp
+                                               if (i == index) {
+                                                   val updatedWaypoint = wp.copy(location_id = locationId)
+                                                   Log.d("CustomWaypointCard", "Updated waypoint $i: $updatedWaypoint")
+                                                   updatedWaypoint
+                                               } else wp
+                                           }
+                                           Log.d("CustomWaypointCard", "Custom waypoints after update: $customWaypoints")
+                                           
+                                           // If a location was selected, we need to ensure it's in the locations list
+                                           if (locationId > 0) {
+                                               val selectedLocation = locations.find { it.id == locationId }
+                                               if (selectedLocation != null && !locations.any { it.id == locationId }) {
+                                                   Log.d("CustomWaypointCard", "Adding selected location to main locations list: ${selectedLocation.custom_name ?: selectedLocation.google_place_name}")
+                                                   locations = locations + selectedLocation
+                                               }
                                            }
                                        },
                                        onPriceChanged = { price ->
@@ -1275,25 +1748,34 @@ private fun CreateTripTab(
                                            }
                                        },
                                        onMoveUp = {
+                                           Log.d("CustomWaypointCard", "Moving waypoint $index up")
                                            val newList = customWaypoints.toMutableList()
                                            val temp = newList[index]
                                            newList[index] = newList[index - 1].copy(order = index)
                                            newList[index - 1] = temp.copy(order = index - 1)
                                            customWaypoints = newList
+                                           Log.d("CustomWaypointCard", "Custom waypoints after move up: $customWaypoints")
                                        },
                                        onMoveDown = {
+                                           Log.d("CustomWaypointCard", "Moving waypoint $index down")
                                            val newList = customWaypoints.toMutableList()
                                            val temp = newList[index]
                                            newList[index] = newList[index + 1].copy(order = index)
                                            newList[index + 1] = temp.copy(order = index + 1)
                                            customWaypoints = newList
+                                           Log.d("CustomWaypointCard", "Custom waypoints after move down: $customWaypoints")
                                        },
                                        onRemove = {
+                                           Log.d("CustomWaypointCard", "Removing waypoint $index")
                                            customWaypoints = customWaypoints.filterIndexed { i, _ -> i != index }
                                                .mapIndexed { newIndex, wp ->
                                                    wp.copy(order = newIndex)
                                                }
-                                       }
+                                           Log.d("CustomWaypointCard", "Custom waypoints after removal: $customWaypoints")
+                                       },
+                                       remoteDataManager = remoteDataManager,
+                                       lifecycleScope = lifecycleScope,
+                                       activity = activity
                                    )
                                }
                            } else if (selectedRoute?.waypoints?.isEmpty() == true) {
@@ -1900,6 +2382,7 @@ private fun CustomWaypointCard(
     waypoint: CreateCustomWaypoint,
     index: Int,
     availableLocations: List<SavePlaceResponse>,
+    allLocations: List<SavePlaceResponse>,
     isLoadingLocations: Boolean,
     canMoveUp: Boolean,
     canMoveDown: Boolean,
@@ -1907,7 +2390,10 @@ private fun CustomWaypointCard(
     onPriceChanged: (Double?) -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    remoteDataManager: RemoteDataManager,
+    lifecycleScope: kotlinx.coroutines.CoroutineScope,
+    activity: CreateTripActivity
 ) {
     Card(
         colors = CardDefaults.cardColors(
@@ -1941,65 +2427,40 @@ private fun CustomWaypointCard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Location Selection
-            var expanded by remember { mutableStateOf(false) }
+            // Location Selection with Search
             val selectedLocation = availableLocations.find { it.id == waypoint.location_id }
-
-            ExposedDropdownMenuBox(
-                expanded = expanded,
-                onExpandedChange = { expanded = it }
-            ) {
-                OutlinedTextField(
-                    value = selectedLocation?.let {
-                        it.custom_name ?: it.google_place_name
-                    } ?: "Select location",
-                    onValueChange = { },
-                    readOnly = true,
-                    label = { Text("Location") },
-                    trailingIcon = {
-                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .menuAnchor(),
-                    colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors()
-                )
-
-                ExposedDropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false }
-                ) {
-                    if (isLoadingLocations) {
-                        DropdownMenuItem(
-                            text = { Text("Loading locations...") },
-                            onClick = { }
-                        )
-                    } else {
-                        availableLocations.forEach { location ->
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(
-                                            text = location.custom_name
-                                                ?: location.google_place_name,
-                                            fontSize = 14.sp
-                                        )
-                                        Text(
-                                            text = "${location.district}, ${location.province}",
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                },
-                                onClick = {
-                                    onLocationChanged(location.id)
-                                    expanded = false
-                                }
-                            )
-                        }
-                    }
-                }
+            Log.d("CustomWaypointCard", "Waypoint $index: location_id = ${waypoint.location_id}")
+            Log.d("CustomWaypointCard", "Available locations count: ${availableLocations.size}")
+            Log.d("CustomWaypointCard", "Available location IDs: ${availableLocations.map { it.id }}")
+            Log.d("CustomWaypointCard", "All locations count: ${allLocations.size}")
+            Log.d("CustomWaypointCard", "All location IDs: ${allLocations.map { it.id }}")
+            Log.d("CustomWaypointCard", "Selected location: ${selectedLocation?.custom_name ?: selectedLocation?.google_place_name}")
+            
+            // If we have a location_id but no selectedLocation, it means the location was filtered out
+            // In this case, we need to find it in the full locations list
+            val finalSelectedLocation = if (waypoint.location_id > 0 && selectedLocation == null) {
+                Log.d("CustomWaypointCard", "Location ${waypoint.location_id} not found in availableLocations, searching in full locations list")
+                val foundLocation = allLocations.find { it.id == waypoint.location_id }
+                Log.d("CustomWaypointCard", "Found in allLocations: ${foundLocation?.custom_name ?: foundLocation?.google_place_name}")
+                foundLocation
+            } else {
+                Log.d("CustomWaypointCard", "Using selectedLocation from availableLocations: ${selectedLocation?.custom_name ?: selectedLocation?.google_place_name}")
+                selectedLocation
             }
+            
+            Log.d("CustomWaypointCard", "Passing finalSelectedLocation to SearchableLocationDropdown: ${finalSelectedLocation?.custom_name ?: finalSelectedLocation?.google_place_name}")
+            SearchableLocationDropdown(
+                selectedLocation = finalSelectedLocation,
+                onLocationSelected = { location ->
+                    Log.d("CustomWaypointCard", "SearchableLocationDropdown onLocationSelected called with: ${location?.custom_name ?: location?.google_place_name}")
+                    onLocationChanged(location?.id ?: 0)
+                },
+                isLoading = isLoadingLocations,
+                remoteDataManager = remoteDataManager,
+                lifecycleScope = lifecycleScope,
+                activity = activity,
+                label = "Location"
+            )
 
             Spacer(modifier = Modifier.height(8.dp))
 
