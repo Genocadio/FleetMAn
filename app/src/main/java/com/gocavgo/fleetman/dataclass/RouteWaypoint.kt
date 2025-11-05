@@ -8,7 +8,7 @@ data class RouteWaypoint(
     val route_id: Int,
     val location_id: Int,
     var order: Int,
-    var price: Double,
+    var price: Double?,
     val created_at: String,
     val location: SavePlaceResponse
 )

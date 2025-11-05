@@ -431,6 +431,103 @@ class RemoteDataManager {
         }
     }
 
+    /**
+     * Logout a vehicle
+     * @param vehicleId ID of the vehicle to logout
+     * @return RemoteResult indicating success or error
+     */
+    suspend fun logoutVehicle(vehicleId: Long): RemoteResult<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "=== LOGGING OUT VEHICLE $vehicleId ===")
+
+                val url = "https://api.gocavgo.com/api/main/vehicles/$vehicleId/settings".toHttpUrl()
+                Log.d(TAG, "Request URL: $url")
+
+                val requestBody = """{"logout": 1}""".toRequestBody("application/json".toMediaType())
+
+                val request = Request.Builder()
+                    .url(url)
+                    .put(requestBody)
+                    .addHeader("Accept", "application/json")
+                    .addHeader("Content-Type", "application/json")
+                    .build()
+
+                val response = httpClient.newCall(request).execute()
+
+                response.use { resp ->
+                    val responseBody = resp.body?.string() ?: ""
+                    if (resp.isSuccessful && resp.code == 200) {
+                        Log.d(TAG, "Vehicle $vehicleId logged out successfully")
+                        RemoteResult.Success(Unit)
+                    } else {
+                        Log.e(
+                            TAG,
+                            "Failed to logout vehicle. Response code: ${resp.code}, Error: $responseBody"
+                        )
+                        RemoteResult.Error("Failed to logout vehicle: HTTP ${resp.code} - $responseBody")
+                    }
+                }
+
+            } catch (e: IOException) {
+                Log.e(TAG, "Network error while logging out vehicle: ${e.message}", e)
+                RemoteResult.Error("Network error: ${e.message}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to logout vehicle: ${e.message}", e)
+                RemoteResult.Error("Failed to logout vehicle: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Reset vehicle password
+     * @param licensePlate License plate of the vehicle
+     * @return RemoteResult containing the password text
+     */
+    suspend fun resetVehiclePassword(licensePlate: String): RemoteResult<String> {
+        return withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "=== RESETTING PASSWORD FOR VEHICLE $licensePlate ===")
+
+                val url = "https://api.gocavgo.com/api/main/vehicles/$licensePlate/password/reset".toHttpUrl()
+                Log.d(TAG, "Request URL: $url")
+
+                val emptyBody = "".toRequestBody("application/json".toMediaType())
+
+                val request = Request.Builder()
+                    .url(url)
+                    .post(emptyBody)
+                    .addHeader("Accept", "application/json")
+                    .addHeader("Content-Type", "application/json")
+                    .build()
+
+                val response = httpClient.newCall(request).execute()
+
+                response.use { resp ->
+                    val responseBody = resp.body?.string() ?: ""
+                    if (resp.isSuccessful) {
+                        Log.d(TAG, "Password reset successful for vehicle $licensePlate")
+                        Log.d(TAG, "Password response: $responseBody")
+                        RemoteResult.Success(responseBody.trim())
+                    } else {
+                        Log.e(
+                            TAG,
+                            "Failed to reset password. Response code: ${resp.code}, Error: $responseBody"
+                        )
+                        RemoteResult.Error("Failed to reset password: HTTP ${resp.code} - $responseBody")
+                    }
+                }
+
+            } catch (e: IOException) {
+                Log.e(TAG, "Network error while resetting password: ${e.message}", e)
+                RemoteResult.Error("Network error: ${e.message}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to reset password: ${e.message}", e)
+                RemoteResult.Error("Failed to reset password: ${e.message}")
+            }
+        }
+    }
+
     data class PaginatedResult<T>(
         val data: T,
         val pagination: PaginationInfo

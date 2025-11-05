@@ -101,6 +101,15 @@ class AuthActivity : ComponentActivity() {
         enableEdgeToEdge()
         credentialsManager = CredentialsManager(applicationContext)
 
+        // If already logged in, navigate to MainActivity
+        if (credentialsManager.getLoginStatus()) {
+            val intent = Intent(this, MainActivity::class.java)
+            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            finish()
+            return
+        }
+
         onBackPressedDispatcher.addCallback(this)   {
             val intent = Intent(this@AuthActivity, MainActivity::class.java)
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -288,7 +297,13 @@ class AuthActivity : ComponentActivity() {
                                                 context = context,
                                                 emailOrPhone = loginEmailOrPhone,
                                                 password = loginPassword,
-                                                onSuccess = { isLoggedIn = true },
+                                                onSuccess = { 
+                                                    // Navigate to MainActivity after successful login
+                                                    val intent = Intent(this@AuthActivity, MainActivity::class.java)
+                                                    intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+                                                    startActivity(intent)
+                                                    finish()
+                                                },
                                                 onComplete = { isLoading = false }
                                             )
                                         } else {

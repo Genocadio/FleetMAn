@@ -13,12 +13,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
+import com.google.accompanist.swiperefresh.SwipeRefresh
+import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -101,13 +107,7 @@ private fun TripManagementContent(
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        // Vehicle Information Card - only show on View Trips tab
-        if (selectedTabIndex == 0) {
-            VehicleInfoCard(carId = carId, licensePlate = licensePlate)
-            Spacer(modifier = Modifier.height(16.dp))
-        }
-
-        // Tab Row - moved up
+        // Tab Row
         TabRow(selectedTabIndex = selectedTabIndex) {
             Tab(
                 selected = selectedTabIndex == 0,
@@ -118,6 +118,18 @@ private fun TripManagementContent(
                 selected = selectedTabIndex == 1,
                 onClick = { selectedTabIndex = 1 },
                 text = { Text("Create Trip") }
+            )
+        }
+
+        // Show license plate below tab switcher only on View Trips tab
+        if (selectedTabIndex == 0) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Vehicle: ${licensePlate ?: "Unknown"}",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp)
             )
         }
 
@@ -705,61 +717,6 @@ private fun RouteSearchPopup(
 }
 
 @Composable
-private fun VehicleInfoCard(carId: Int, licensePlate: String?) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
-            Text(
-                text = "Selected Vehicle",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column {
-                    Text(
-                        text = "Vehicle ID:",
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = carId.toString(),
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-
-                Column(
-                    horizontalAlignment = Alignment.End
-                ) {
-                    Text(
-                        text = "License Plate:",
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = licensePlate ?: "Unknown",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun ViewTripsTab(
     vehicleId: Int,
     remoteDataManager: RemoteDataManager,
@@ -768,14 +725,21 @@ private fun ViewTripsTab(
 ) {
     var trips by remember { mutableStateOf<List<TripResponse>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
+    var isRefreshing by remember { mutableStateOf(false) }
     var currentPage by remember { mutableIntStateOf(1) }
     var hasNextPage by remember { mutableStateOf(false) }
     var isDeletingTrip by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
 
     // Function to load trips
-    fun loadTrips(page: Int = 1) {
+    fun loadTrips(page: Int = 1, isRefresh: Boolean = false) {
         lifecycleScope.launch {
-            isLoading = true
+            if (isRefresh) {
+                isRefreshing = true
+            } else {
+                isLoading = true
+            }
+            errorMessage = null
 
             when (val result = remoteDataManager.getVehicleTrips(vehicleId, page, 20)) {
                 is RemoteResult.Success -> {
@@ -786,9 +750,15 @@ private fun ViewTripsTab(
                     }
                     currentPage = page
                     hasNextPage = result.data.pagination.has_next
+                    isLoading = false
+                    isRefreshing = false
+                    errorMessage = null
                 }
 
                 is RemoteResult.Error -> {
+                    errorMessage = result.message
+                    isLoading = false
+                    isRefreshing = false
                     // Show error toast
                     activity.showErrorToast(
                         message = "Failed to load trips: ${result.message}",
@@ -796,23 +766,24 @@ private fun ViewTripsTab(
                     )
                 }
             }
-
-            isLoading = false
         }
     }
 
-    // Function to delete trip
+    // Function to delete/cancel trip
     fun deleteTrip(tripId: Int) {
         lifecycleScope.launch {
             isDeletingTrip = true
 
+            val tripStatus = trips.find { it.id == tripId }?.status
+            val isCanceling = tripStatus == "IN_PROGRESS" || tripStatus == "SCHEDULED"
+            val isDeleting = tripStatus == "CANCELLED"
+
             when (val result = remoteDataManager.deleteTrip(tripId)) {
                 is RemoteResult.Success -> {
                     // Show success toast
-                    val tripStatus = trips.find { it.id == tripId }?.status
-                    val action = when (tripStatus) {
-                        "IN_PROGRESS" -> "canceled"
-                        "CANCELLED" -> "deleted"
+                    val action = when {
+                        isCanceling -> "canceled"
+                        isDeleting -> "deleted"
                         else -> "deleted"
                     }
                     activity.showSuccessToast(
@@ -820,21 +791,21 @@ private fun ViewTripsTab(
                         title = if (action == "canceled") "Trip Canceled" else "Trip Deleted"
                     )
                     
-                    // For IN_PROGRESS trips, refresh the list to show updated status
-                    // For other trips, remove from list
-                    if (tripStatus == "IN_PROGRESS") {
-                        loadTrips(1) // Refresh the list to show updated status
-                    } else {
+                    // For canceling (IN_PROGRESS/SCHEDULED), refresh the list to show updated status
+                    // Trip stays in list but status changes to CANCELLED
+                    // For deleting (CANCELLED), remove from list
+                    if (isCanceling) {
+                        loadTrips(1, isRefresh = true) // Refresh the list to show updated status (now CANCELLED)
+                    } else if (isDeleting) {
                         trips = trips.filter { it.id != tripId }
                     }
                 }
 
                 is RemoteResult.Error -> {
                     // Show error toast
-                    val tripStatus = trips.find { it.id == tripId }?.status
-                    val action = when (tripStatus) {
-                        "IN_PROGRESS" -> "cancel"
-                        "CANCELLED" -> "delete"
+                    val action = when {
+                        isCanceling -> "cancel"
+                        isDeleting -> "delete"
                         else -> "delete"
                     }
                     activity.showErrorToast(
@@ -856,7 +827,7 @@ private fun ViewTripsTab(
     Column(
         modifier = Modifier.fillMaxSize()
     ) {
-        if (isLoading && trips.isEmpty()) {
+        if (isLoading && trips.isEmpty() && errorMessage == null) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -865,7 +836,30 @@ private fun ViewTripsTab(
             ) {
                 CircularProgressIndicator()
             }
-        } else if (trips.isEmpty()) {
+        } else if (errorMessage != null && trips.isEmpty()) {
+            // Show error with retry button when no trips loaded
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Error: $errorMessage",
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    )
+                    Button(
+                        onClick = { loadTrips(1) }
+                    ) {
+                        Text("Retry")
+                    }
+                }
+            }
+        } else if (trips.isEmpty() && !isLoading) {
             Card(
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -877,49 +871,54 @@ private fun ViewTripsTab(
                 )
             }
         } else {
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            SwipeRefresh(
+                state = rememberSwipeRefreshState(isRefreshing),
+                onRefresh = { loadTrips(1, isRefresh = true) }
             ) {
-                items(trips) { trip ->
-                    TripCard(
-                        trip = trip,
-                        onDeleteTrip = { tripId -> deleteTrip(tripId) }
-                    )
-                }
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(trips) { trip ->
+                        TripCard(
+                            trip = trip,
+                            onDeleteTrip = { tripId -> deleteTrip(tripId) }
+                        )
+                    }
 
-                if (hasNextPage) {
-                    item {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            if (isLoading) {
-                                CircularProgressIndicator()
-                            } else {
-                                Button(
-                                    onClick = { loadTrips(currentPage + 1) }
-                                ) {
-                                    Text("Load More")
+                    if (hasNextPage) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                if (isLoading) {
+                                    CircularProgressIndicator()
+                                } else {
+                                    Button(
+                                        onClick = { loadTrips(currentPage + 1) }
+                                    ) {
+                                        Text("Load More")
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                // Loading indicator for delete operation
-                if (isDeletingTrip) {
-                    item {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            CircularProgressIndicator()
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Deleting trip...")
+                    // Loading indicator for delete operation
+                    if (isDeletingTrip) {
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                CircularProgressIndicator()
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Deleting trip...")
+                            }
                         }
                     }
                 }
@@ -979,8 +978,23 @@ private fun TripCard(
                         )
                     }
 
-                    // Delete button - show for SCHEDULED, IN_PROGRESS, and CANCELLED trips
-                    if (trip.status == "SCHEDULED" || trip.status == "IN_PROGRESS" || trip.status == "CANCELLED") {
+                    // Cancel button for IN_PROGRESS and SCHEDULED trips
+                    if (trip.status == "IN_PROGRESS" || trip.status == "SCHEDULED") {
+                        IconButton(
+                            onClick = { showDeleteDialog = true },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Cancel trip",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    
+                    // Delete button for CANCELLED trips
+                    if (trip.status == "CANCELLED") {
                         IconButton(
                             onClick = { showDeleteDialog = true },
                             modifier = Modifier.size(32.dp)
@@ -993,6 +1007,8 @@ private fun TripCard(
                             )
                         }
                     }
+                    
+                    // COMPLETED trips have no delete/cancel button
                 }
             }
 
@@ -1048,7 +1064,7 @@ private fun TripCard(
             title = { 
                 Text(
                     when (trip.status) {
-                        "IN_PROGRESS" -> "Cancel Trip"
+                        "IN_PROGRESS", "SCHEDULED" -> "Cancel Trip"
                         "CANCELLED" -> "Delete Trip"
                         else -> "Delete Trip"
                     }
@@ -1057,7 +1073,7 @@ private fun TripCard(
             text = {
                 Text(
                     when (trip.status) {
-                        "IN_PROGRESS" -> "Are you sure you want to cancel Trip #${trip.id}? This will cancel the trip and then delete it."
+                        "IN_PROGRESS", "SCHEDULED" -> "Are you sure you want to cancel Trip #${trip.id}? This will cancel the trip and then delete it."
                         "CANCELLED" -> "Are you sure you want to permanently delete Trip #${trip.id}? This action cannot be undone."
                         else -> "Are you sure you want to delete Trip #${trip.id}? This action cannot be undone."
                     }
@@ -1072,7 +1088,7 @@ private fun TripCard(
                 ) {
                     Text(
                         when (trip.status) {
-                            "IN_PROGRESS" -> "Cancel"
+                            "IN_PROGRESS", "SCHEDULED" -> "Cancel"
                             "CANCELLED" -> "Delete"
                             else -> "Delete"
                         }, 
@@ -1089,6 +1105,16 @@ private fun TripCard(
     }
 }
 
+// Internal data class for unified waypoint management
+private data class UnifiedWaypoint(
+    val location_id: Int,
+    val location: SavePlaceResponse,
+    val order: Int,
+    val price: Double?,
+    val isFromRoute: Boolean, // true if from original route, false if custom/edited
+    val originalRouteWaypointId: Int? // null if custom, id if from route
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CreateTripTab(
@@ -1103,6 +1129,9 @@ private fun CreateTripTab(
     var notes by remember { mutableStateOf("") }
     var isReversed by remember { mutableStateOf(false) }
     var customWaypoints by remember { mutableStateOf<List<CreateCustomWaypoint>>(emptyList()) }
+    
+    // Unified waypoint state
+    var unifiedWaypoints by remember { mutableStateOf<List<UnifiedWaypoint>>(emptyList()) }
 
     // Use Calendar for date/time selection
     var selectedDateTime by remember {
@@ -1113,6 +1142,9 @@ private fun CreateTripTab(
 
     var noWaypoints by remember { mutableStateOf(false) }
     var tripPrice by remember { mutableStateOf("") }
+    
+    // Track if user intentionally cleared waypoints
+    var waypointsWereCleared by remember { mutableStateOf(false) }
 
     var isLoadingRoutes by remember { mutableStateOf(false) }
     var isLoadingLocations by remember { mutableStateOf(false) }
@@ -1122,15 +1154,7 @@ private fun CreateTripTab(
     // Function to handle reverse route changes
     fun onReverseRouteChanged(reversed: Boolean) {
         isReversed = reversed
-        if (reversed && customWaypoints.isNotEmpty()) {
-            // Clear custom waypoints when reversing
-            customWaypoints = emptyList()
-            // Show toast message
-            activity.showInfoToast(
-                message = "Route reversed! Custom waypoints cleared.",
-                title = "Route Reversed"
-            )
-        }
+        // Waypoints will be reinitialized by LaunchedEffect(selectedRoute, isReversed)
     }
 
     // Get reversed route data for display
@@ -1158,6 +1182,125 @@ private fun CreateTripTab(
         }
     }
 
+    // Initialize unified waypoints from route
+    // Don't reinitialize if user intentionally cleared waypoints
+    LaunchedEffect(selectedRoute, isReversed) {
+        // If waypoints were cleared, don't reinitialize when toggling reverse
+        if (waypointsWereCleared && unifiedWaypoints.isEmpty()) {
+            return@LaunchedEffect
+        }
+        
+        selectedRoute?.let { route ->
+            val routeWaypoints = if (isReversed) {
+                route.waypoints.reversed().mapIndexed { index, waypoint ->
+                    waypoint.copy(order = route.waypoints.size - 1 - index)
+                }
+            } else {
+                route.waypoints
+            }
+            
+            unifiedWaypoints = routeWaypoints.map { waypoint ->
+                UnifiedWaypoint(
+                    location_id = waypoint.location_id,
+                    location = waypoint.location,
+                    order = waypoint.order,
+                    price = waypoint.price,
+                    isFromRoute = true,
+                    originalRouteWaypointId = waypoint.id
+                )
+            }
+            
+            // Update noWaypoints based on waypoint count
+            noWaypoints = unifiedWaypoints.isEmpty()
+            waypointsWereCleared = false // Reset flag when route changes
+        } ?: run {
+            unifiedWaypoints = emptyList()
+            noWaypoints = false
+            waypointsWereCleared = false
+        }
+    }
+
+    // Waypoint editing handlers
+    fun handlePriceChange(index: Int, newPrice: Double?) {
+        unifiedWaypoints = unifiedWaypoints.mapIndexed { i, wp ->
+            if (i == index) {
+                // Convert to custom if it was from route
+                wp.copy(
+                    price = newPrice,
+                    isFromRoute = false
+                )
+            } else wp
+        }
+    }
+
+    fun handleDelete(index: Int) {
+        unifiedWaypoints = unifiedWaypoints.filterIndexed { i, _ -> i != index }
+            .mapIndexed { newIndex, wp -> wp.copy(order = newIndex) }
+        noWaypoints = unifiedWaypoints.isEmpty()
+        // Mark that waypoints were cleared if list becomes empty
+        if (unifiedWaypoints.isEmpty() && selectedRoute?.waypoints?.isNotEmpty() == true) {
+            waypointsWereCleared = true
+        }
+    }
+
+    fun handleMoveUp(index: Int) {
+        if (index > 0) {
+            val newList = unifiedWaypoints.toMutableList()
+            val temp = newList[index]
+            newList[index] = newList[index - 1].copy(order = index)
+            newList[index - 1] = temp.copy(order = index - 1)
+            unifiedWaypoints = newList
+        }
+    }
+
+    fun handleMoveDown(index: Int) {
+        if (index < unifiedWaypoints.size - 1) {
+            val newList = unifiedWaypoints.toMutableList()
+            val temp = newList[index]
+            newList[index] = newList[index + 1].copy(order = index)
+            newList[index + 1] = temp.copy(order = index + 1)
+            unifiedWaypoints = newList
+        }
+    }
+
+    fun handleRevertToRoute() {
+        selectedRoute?.let { route ->
+            val routeWaypoints = if (isReversed) {
+                route.waypoints.reversed().mapIndexed { index, waypoint ->
+                    waypoint.copy(order = route.waypoints.size - 1 - index)
+                }
+            } else {
+                route.waypoints
+            }
+            
+            unifiedWaypoints = routeWaypoints.map { waypoint ->
+                UnifiedWaypoint(
+                    location_id = waypoint.location_id,
+                    location = waypoint.location,
+                    order = waypoint.order,
+                    price = waypoint.price,
+                    isFromRoute = true,
+                    originalRouteWaypointId = waypoint.id
+                )
+            }
+            noWaypoints = false
+            waypointsWereCleared = false // Reset flag when reverting
+        }
+    }
+
+    fun handleAddWaypoint(location: SavePlaceResponse) {
+        val newWaypoint = UnifiedWaypoint(
+            location_id = location.id,
+            location = location,
+            order = unifiedWaypoints.size,
+            price = null,
+            isFromRoute = false,
+            originalRouteWaypointId = null
+        )
+        unifiedWaypoints = unifiedWaypoints + newWaypoint
+        noWaypoints = false
+    }
+
     // Load locations on first composition (routes will be loaded via search)
     LaunchedEffect(Unit) {
         // Load locations
@@ -1176,8 +1319,8 @@ private fun CreateTripTab(
         }
     }
 
-    // Function to create trip
-    fun createTrip() {
+    // Function to validate and show confirmation dialog
+    fun validateAndShowConfirmation() {
         if (selectedRoute == null) {
             activity.showWarningToast(
                 message = "Please select a route",
@@ -1205,35 +1348,23 @@ private fun CreateTripTab(
             return
         }
 
-        // Validate custom waypoints only if they exist and no_waypoints is false
-        if (!noWaypoints && customWaypoints.isNotEmpty()) {
-            val invalidWaypoints = customWaypoints.filter { it.location_id == 0 }
+        // Validate unified waypoints if they exist
+        if (!noWaypoints && unifiedWaypoints.isNotEmpty()) {
+            val invalidWaypoints = unifiedWaypoints.filter { it.location_id == 0 }
             if (invalidWaypoints.isNotEmpty()) {
                 activity.showWarningToast(
-                    message = "All custom waypoints must have a valid location selected",
+                    message = "All waypoints must have a valid location",
                     title = "Invalid Waypoints"
                 )
                 return
             }
 
-            // Check if any custom waypoint is missing a price
-            val waypointsWithoutPrice = customWaypoints.filter { it.price == null || it.price <= 0.0 }
+            // Check if any waypoint is missing a price
+            val waypointsWithoutPrice = unifiedWaypoints.filter { it.price == null || it.price <= 0.0 }
             if (waypointsWithoutPrice.isNotEmpty()) {
                 activity.showWarningToast(
-                    message = "All custom waypoints must have a valid price. Please complete the pricing for all waypoints.",
+                    message = "All waypoints must have a valid price. Please complete the pricing for all waypoints.",
                     title = "Incomplete Waypoint Data"
-                )
-                return
-            }
-        }
-
-        // Check if route has default waypoints without prices (only if not using custom waypoints)
-        if (!noWaypoints && customWaypoints.isEmpty() && displayRoute?.waypoints?.isNotEmpty() == true) {
-            val waypointsWithoutPrice = displayRoute!!.waypoints.filter { it.price <= 0.0 }
-            if (waypointsWithoutPrice.isNotEmpty()) {
-                activity.showWarningToast(
-                    message = "Route has waypoints without prices. Please add custom waypoints with proper pricing or contact support.",
-                    title = "Incomplete Waypoint Pricing"
                 )
                 return
             }
@@ -1244,23 +1375,26 @@ private fun CreateTripTab(
     }
 
     // Get available locations for waypoints (excluding route origin and destination)
-    val availableLocations = remember(displayRoute, locations, customWaypoints) {
+    val availableLocations = remember(displayRoute, locations, unifiedWaypoints) {
         displayRoute?.let { route ->
             val filteredLocations = locations.filter { location ->
                 location.id != route.origin_id && location.id != route.destination_id
             }
-            // Include any already selected locations from custom waypoints
-            val selectedLocationIds = customWaypoints.map { it.location_id }.filter { it > 0 }
+            // Include any already selected locations from unified waypoints
+            val selectedLocationIds = unifiedWaypoints.map { it.location_id }.filter { it > 0 }
             val selectedLocations = locations.filter { it.id in selectedLocationIds }
             (filteredLocations + selectedLocations).distinctBy { it.id }
         } ?: locations
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize()
-    ) {
+    var showAddWaypointDialog by remember { mutableStateOf(false) }
+    var selectedLocationForWaypoint by remember { mutableStateOf<SavePlaceResponse?>(null) }
+
+    Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(bottom = 80.dp) // Space for FAB
         ) {
 
             // Route Selection with Search
@@ -1284,6 +1418,8 @@ private fun CreateTripTab(
                                 // Don't clear custom waypoints - let user decide if they want to override
                                 // Reset reverse state when new route is selected
                                 isReversed = false
+                                // Reset cleared flag when new route is selected
+                                waypointsWereCleared = false
                                 
                                 // Show info toast when route is selected
                                 it?.let { route ->
@@ -1386,10 +1522,45 @@ private fun CreateTripTab(
                                             color = MaterialTheme.colorScheme.primary,
                                             fontWeight = FontWeight.Medium
                                         )
+                                    }
+                                    
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    
+                                    // Editable Trip Price
+                                    OutlinedTextField(
+                                        value = tripPrice,
+                                        onValueChange = { newValue ->
+                                            // Only allow numbers and at most one decimal point
+                                            val filtered = newValue.filter { it.isDigit() || it == '.' }
+                                            // Ensure only one decimal point
+                                            if (filtered.count { it == '.' } <= 1) {
+                                                tripPrice = filtered
+                                            }
+                                        },
+                                        label = { Text("Trip Price (RWF)") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        placeholder = { Text("Enter trip price") },
+                                        keyboardOptions = KeyboardOptions(
+                                            keyboardType = KeyboardType.Decimal
+                                        )
+                                    )
+                                    
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    
+                                    // Reverse Route Toggle
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Checkbox(
+                                            checked = isReversed,
+                                            onCheckedChange = { onReverseRouteChanged(it) }
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            text = "${route.route_price} RWF",
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold,
+                                            text = "Reverse Route",
+                                            fontSize = 14.sp,
                                             color = MaterialTheme.colorScheme.onSecondaryContainer
                                         )
                                     }
@@ -1401,437 +1572,101 @@ private fun CreateTripTab(
             }
 
 
-            // Trip Configuration
-            item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "Trip Configuration",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Trip Price
-                        OutlinedTextField(
-                            value = tripPrice,
-                            onValueChange = { tripPrice = it },
-                            label = { Text("Trip Price (RWF)") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            placeholder = { Text("Enter trip price") }
-                        )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Departure Date & Time Selection
-                        DateTimePickerSection(
-                            selectedDateTime = selectedDateTime,
-                            onDateTimeChanged = { selectedDateTime = it }
-                        )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Compact toggles row
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            // Only show No Waypoints if route has waypoints
-                            if (selectedRoute?.waypoints?.isNotEmpty() == true) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Checkbox(
-                                        checked = noWaypoints,
-                                        onCheckedChange = {
-                                            noWaypoints = it
-                                            if (it) {
-                                                customWaypoints = emptyList()
-                                            }
-                                        }
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "No Waypoints",
-                                        fontSize = 14.sp
-                                    )
-                                }
-                            } else {
-                                Spacer(modifier = Modifier.weight(1f))
-                            }
-
-                            // Reverse Route Toggle
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Checkbox(
-                                    checked = isReversed,
-                                    onCheckedChange = { onReverseRouteChanged(it) }
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "Reverse Route",
-                                    fontSize = 14.sp
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Notes
-                        OutlinedTextField(
-                            value = notes,
-                            onValueChange = { notes = it },
-                            label = { Text("Notes (Optional)") },
-                            modifier = Modifier.fillMaxWidth(),
-                            maxLines = 3
-                        )
-                    }
+            // Unified Waypoint Table (only show if route selected)
+            if (selectedRoute != null) {
+                item {
+                    UnifiedWaypointTable(
+                        unifiedWaypoints = unifiedWaypoints,
+                        onPriceChanged = { index, price -> handlePriceChange(index, price) },
+                        onDelete = { index -> handleDelete(index) },
+                        onMoveUp = { index -> handleMoveUp(index) },
+                        onMoveDown = { index -> handleMoveDown(index) },
+                        selectedRoute = selectedRoute,
+                        onRevertToRoute = { handleRevertToRoute() }
+                    )
                 }
             }
 
-            // Route Waypoints Display (read-only)
-            displayRoute?.let { route ->
-                if (route.waypoints.isNotEmpty()) {
-                    item {
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "Route Waypoints",
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    
-                                    if (isReversed) {
-                                        Card(
-                                            colors = CardDefaults.cardColors(
-                                                containerColor = MaterialTheme.colorScheme.primary
-                                            )
-                                        ) {
-                                            Text(
-                                                text = "REVERSED ORDER",
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onPrimary
-                                            )
-                                        }
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(8.dp))
-
-                                Text(
-                                    text = if (isReversed) 
-                                        "Default waypoints for this route (reversed order - will be used unless custom waypoints are added):"
-                                    else
-                                        "Default waypoints for this route (will be used unless custom waypoints are added):",
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-
-                                Spacer(modifier = Modifier.height(8.dp))
-
-                                route.waypoints.sortedBy { it.order }.forEach { waypoint ->
-                                    Card(
-                                        colors = CardDefaults.cardColors(
-                                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                                        ),
-                                        modifier = Modifier.padding(vertical = 2.dp)
-                                    ) {
-                                        Column(modifier = Modifier.padding(8.dp)) {
-                                            Text(
-                                                text = waypoint.location.custom_name
-                                                    ?: waypoint.location.google_place_name,
-                                                fontSize = 14.sp,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                            Text(
-                                                text = "Order: ${waypoint.order + 1} | Price: ${waypoint.price} RWF",
-                                                fontSize = 12.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            // Departure Date & Time Selection (replaces Create Trip button)
+            // Only show when route and price are set
+            if (selectedRoute != null && tripPrice.isNotBlank()) {
+                item {
+                    DateTimePickerSection(
+                        selectedDateTime = selectedDateTime,
+                        onDateTimeChanged = { newDateTime ->
+                            selectedDateTime = newDateTime
+                        },
+                        onDateTimeConfirmed = {
+                            // After date/time is confirmed, validate and show confirmation dialog
+                            validateAndShowConfirmation()
+                        },
+                        enabled = !isCreatingTrip,
+                        isCreatingTrip = isCreatingTrip
+                    )
                 }
             }
-
-           // Custom Waypoints (only show if no_waypoints is false)
-           if (!noWaypoints) {
-               item {
-                   Card(modifier = Modifier.fillMaxWidth()) {
-                       Column(modifier = Modifier.padding(16.dp)) {
-                           Row(
-                               modifier = Modifier.fillMaxWidth(),
-                               horizontalArrangement = Arrangement.SpaceBetween,
-                               verticalAlignment = Alignment.CenterVertically
-                           ) {
-                               Row(
-                                   verticalAlignment = Alignment.CenterVertically,
-                                   horizontalArrangement = Arrangement.spacedBy(8.dp)
-                               ) {
-                                   Text(
-                                       text = "Waypoints Configuration",
-                                       fontSize = 16.sp,
-                                       fontWeight = FontWeight.Bold
-                                   )
-                                   
-                                   if (isReversed && selectedRoute?.waypoints?.isNotEmpty() == true) {
-                                       Card(
-                                           colors = CardDefaults.cardColors(
-                                               containerColor = MaterialTheme.colorScheme.primary
-                                           )
-                                       ) {
-                                           Text(
-                                               text = "REVERSED",
-                                               modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                               fontSize = 10.sp,
-                                               fontWeight = FontWeight.Bold,
-                                               color = MaterialTheme.colorScheme.onPrimary
-                                           )
-                                       }
-                                   }
-                               }
-
-                               Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                   TextButton(
-                                       onClick = {
-                                           val newWaypoint = CreateCustomWaypoint(
-                                               location_id = 0,
-                                               order = customWaypoints.size,
-                                               price = null
-                                           )
-                                           customWaypoints = customWaypoints + newWaypoint
-                                           Log.d("CreateTripTab", "Added new waypoint: $newWaypoint")
-                                           Log.d("CreateTripTab", "Custom waypoints after addition: $customWaypoints")
-                                           
-                                           // Show info toast when waypoint is added
-                                           activity.showInfoToast(
-                                               message = "Custom waypoint added. Please select a location.",
-                                               title = "Waypoint Added"
-                                           )
-                                       }
-                                   ) {
-                                       Text("+ Add Custom")
-                                   }
-                                   
-                                   if (customWaypoints.isNotEmpty()) {
-                                       TextButton(
-                                           onClick = {
-                                               Log.d("CreateTripTab", "Clearing all custom waypoints")
-                                               customWaypoints = emptyList()
-                                               activity.showInfoToast(
-                                                   message = "Custom waypoints cleared. Using route defaults.",
-                                                   title = "Waypoints Cleared"
-                                               )
-                                           }
-                                       ) {
-                                           Text("Clear All", color = MaterialTheme.colorScheme.error)
-                                       }
-                                   }
-                               }
-                           }
-
-                           Spacer(modifier = Modifier.height(8.dp))
-
-                           // Show route's default waypoints if they exist
-                           displayRoute?.let { route ->
-                               if (route.waypoints.isNotEmpty()) {
-                                   Text(
-                                       text = "Route Default Waypoints:",
-                                       fontSize = 14.sp,
-                                       fontWeight = FontWeight.Medium,
-                                       color = MaterialTheme.colorScheme.primary
-                                   )
-
-                                   Spacer(modifier = Modifier.height(8.dp))
-
-                                   route.waypoints.sortedBy { it.order }.forEach { waypoint ->
-                                       Card(
-                                           colors = CardDefaults.cardColors(
-                                               containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                                           ),
-                                           modifier = Modifier.padding(vertical = 2.dp)
-                                       ) {
-                                           Row(
-                                               modifier = Modifier.padding(12.dp),
-                                               horizontalArrangement = Arrangement.SpaceBetween,
-                                               verticalAlignment = Alignment.CenterVertically
-                                           ) {
-                                               Column(modifier = Modifier.weight(1f)) {
-                                                   Text(
-                                                       text = waypoint.location.custom_name ?: waypoint.location.google_place_name,
-                                                       fontSize = 14.sp,
-                                                       fontWeight = FontWeight.Medium
-                                                   )
-                                                   Text(
-                                                       text = "Order: ${waypoint.order + 1}",
-                                                       fontSize = 12.sp,
-                                                       color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                   )
-                                               }
-                                               Text(
-                                                   text = "${waypoint.price} RWF",
-                                                   fontSize = 12.sp,
-                                                   fontWeight = FontWeight.Medium,
-                                                   color = MaterialTheme.colorScheme.onSurfaceVariant
-                                               )
-                                           }
-                                       }
-                                   }
-
-                                   if (customWaypoints.isNotEmpty()) {
-                                       Spacer(modifier = Modifier.height(12.dp))
-                                       Text(
-                                           text = if (isReversed) 
-                                               "Custom Waypoints (will override reversed defaults):"
-                                           else
-                                               "Custom Waypoints (will override defaults):",
-                                           fontSize = 14.sp,
-                                           fontWeight = FontWeight.Medium,
-                                           color = MaterialTheme.colorScheme.error
-                                       )
-                                   }
-                               }
-                           }
-
-                           // Custom waypoints section
-                           if (customWaypoints.isNotEmpty()) {
-                               Spacer(modifier = Modifier.height(8.dp))
-                               customWaypoints.forEachIndexed { index, waypoint ->
-                                   Spacer(modifier = Modifier.height(8.dp))
-                                   CustomWaypointCard(
-                                       waypoint = waypoint,
-                                       index = index,
-                                       availableLocations = availableLocations,
-                                       allLocations = locations,
-                                       isLoadingLocations = isLoadingLocations,
-                                       canMoveUp = index > 0,
-                                       canMoveDown = index < customWaypoints.size - 1,
-                                       onLocationChanged = { locationId ->
-                                           Log.d("CustomWaypointCard", "Location changed for waypoint $index: locationId = $locationId")
-                                           customWaypoints = customWaypoints.mapIndexed { i, wp ->
-                                               if (i == index) {
-                                                   val updatedWaypoint = wp.copy(location_id = locationId)
-                                                   Log.d("CustomWaypointCard", "Updated waypoint $i: $updatedWaypoint")
-                                                   updatedWaypoint
-                                               } else wp
-                                           }
-                                           Log.d("CustomWaypointCard", "Custom waypoints after update: $customWaypoints")
-                                           
-                                           // If a location was selected, we need to ensure it's in the locations list
-                                           if (locationId > 0) {
-                                               val selectedLocation = locations.find { it.id == locationId }
-                                               if (selectedLocation != null && !locations.any { it.id == locationId }) {
-                                                   Log.d("CustomWaypointCard", "Adding selected location to main locations list: ${selectedLocation.custom_name ?: selectedLocation.google_place_name}")
-                                                   locations = locations + selectedLocation
-                                               }
-                                           }
-                                       },
-                                       onPriceChanged = { price ->
-                                           customWaypoints = customWaypoints.mapIndexed { i, wp ->
-                                               if (i == index) wp.copy(price = price)
-                                               else wp
-                                           }
-                                       },
-                                       onMoveUp = {
-                                           Log.d("CustomWaypointCard", "Moving waypoint $index up")
-                                           val newList = customWaypoints.toMutableList()
-                                           val temp = newList[index]
-                                           newList[index] = newList[index - 1].copy(order = index)
-                                           newList[index - 1] = temp.copy(order = index - 1)
-                                           customWaypoints = newList
-                                           Log.d("CustomWaypointCard", "Custom waypoints after move up: $customWaypoints")
-                                       },
-                                       onMoveDown = {
-                                           Log.d("CustomWaypointCard", "Moving waypoint $index down")
-                                           val newList = customWaypoints.toMutableList()
-                                           val temp = newList[index]
-                                           newList[index] = newList[index + 1].copy(order = index)
-                                           newList[index + 1] = temp.copy(order = index + 1)
-                                           customWaypoints = newList
-                                           Log.d("CustomWaypointCard", "Custom waypoints after move down: $customWaypoints")
-                                       },
-                                       onRemove = {
-                                           Log.d("CustomWaypointCard", "Removing waypoint $index")
-                                           customWaypoints = customWaypoints.filterIndexed { i, _ -> i != index }
-                                               .mapIndexed { newIndex, wp ->
-                                                   wp.copy(order = newIndex)
-                                               }
-                                           Log.d("CustomWaypointCard", "Custom waypoints after removal: $customWaypoints")
-                                       },
-                                       remoteDataManager = remoteDataManager,
-                                       lifecycleScope = lifecycleScope,
-                                       activity = activity
-                                   )
-                               }
-                           } else if (selectedRoute?.waypoints?.isEmpty() == true) {
-                               Spacer(modifier = Modifier.height(8.dp))
-                               Text(
-                                   text = "This route has no default waypoints. Add custom waypoints if needed.",
-                                   fontSize = 14.sp,
-                                   color = MaterialTheme.colorScheme.onSurfaceVariant
-                               )
-                           }
-                           
-                           // Show note about reversed route
-                           if (isReversed && selectedRoute?.waypoints?.isNotEmpty() == true) {
-                               Spacer(modifier = Modifier.height(8.dp))
-                               Card(
-                                   colors = CardDefaults.cardColors(
-                                       containerColor = MaterialTheme.colorScheme.primaryContainer
-                                   )
-                               ) {
-                                   Column(modifier = Modifier.padding(8.dp)) {
-                                       Text(
-                                           text = "⚠️ Route Reversed",
-                                           fontSize = 12.sp,
-                                           fontWeight = FontWeight.Bold,
-                                           color = MaterialTheme.colorScheme.onPrimaryContainer
-                                       )
-                                       Text(
-                                           text = "Origin and destination are swapped. Waypoints are in reverse order.",
-                                           fontSize = 11.sp,
-                                           color = MaterialTheme.colorScheme.onPrimaryContainer
-                                       )
-                                   }
-                               }
-                           }
-                       }
-                   }
-               }
-           }
-
-            // Create Trip Button
-            item {
-                Button(
-                    onClick = { createTrip() },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = selectedRoute != null && tripPrice.isNotBlank() && !isCreatingTrip
-                ) {
-                    if (isCreatingTrip) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
-                    Text("Create Trip")
-                }
+        }
+        
+        // Floating Action Button for adding waypoints
+        if (selectedRoute != null) {
+            FloatingActionButton(
+                onClick = { showAddWaypointDialog = true },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp),
+                containerColor = MaterialTheme.colorScheme.primary
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Add Waypoint",
+                    tint = MaterialTheme.colorScheme.onPrimary
+                )
             }
+        }
+        
+        // Location search dialog for adding waypoints
+        if (showAddWaypointDialog) {
+            AlertDialog(
+                onDismissRequest = { 
+                    showAddWaypointDialog = false
+                    selectedLocationForWaypoint = null
+                },
+                title = { Text("Add Waypoint") },
+                text = {
+                    SearchableLocationDropdown(
+                        selectedLocation = selectedLocationForWaypoint,
+                        onLocationSelected = { location ->
+                            selectedLocationForWaypoint = location
+                            // Don't add yet - wait for user to click "Add" button
+                        },
+                        isLoading = isLoadingLocations,
+                        remoteDataManager = remoteDataManager,
+                        lifecycleScope = lifecycleScope,
+                        activity = activity,
+                        label = "Search Location"
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            selectedLocationForWaypoint?.let { handleAddWaypoint(it) }
+                            showAddWaypointDialog = false
+                            selectedLocationForWaypoint = null
+                        },
+                        enabled = selectedLocationForWaypoint != null
+                    ) {
+                        Text("Add")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { 
+                        showAddWaypointDialog = false
+                        selectedLocationForWaypoint = null
+                    }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
     }
 
@@ -1846,29 +1681,17 @@ private fun CreateTripTab(
                 Column {
                     // Show route summary
                     displayRoute?.let { route ->
-                        if (noWaypoints || (route.waypoints.isEmpty() && customWaypoints.isEmpty())) {
+                        if (noWaypoints || unifiedWaypoints.isEmpty()) {
                             // Direct route A → B
                             Text("Route: ${route.origin.custom_name ?: route.origin.google_place_name} → ${route.destination.custom_name ?: route.destination.google_place_name}")
                         } else {
                             // Route with waypoints A → B → C → D
-                            val allWaypoints = if (customWaypoints.isNotEmpty()) {
-                                customWaypoints.sortedBy { it.order }
-                            } else {
-                                route.waypoints.sortedBy { it.order }
-                            }
+                            val sortedWaypoints = unifiedWaypoints.sortedBy { it.order }
                             
                             val routeString = buildString {
                                 append(route.origin.custom_name ?: route.origin.google_place_name)
-                                allWaypoints.forEach { waypoint ->
-                                    val locationName = if (customWaypoints.isNotEmpty()) {
-                                        val customWaypoint = waypoint as CreateCustomWaypoint
-                                        availableLocations.find { it.id == customWaypoint.location_id }?.custom_name 
-                                            ?: availableLocations.find { it.id == customWaypoint.location_id }?.google_place_name 
-                                            ?: "Unknown"
-                                    } else {
-                                        val routeWaypoint = waypoint as RouteWaypoint
-                                        routeWaypoint.location.custom_name ?: routeWaypoint.location.google_place_name
-                                    }
+                                sortedWaypoints.forEach { waypoint ->
+                                    val locationName = waypoint.location.custom_name ?: waypoint.location.google_place_name
                                     append(" → $locationName")
                                 }
                                 append(" → ${route.destination.custom_name ?: route.destination.google_place_name}")
@@ -1881,16 +1704,9 @@ private fun CreateTripTab(
                         Text("Departure: ${dateTimeFormatter.format(selectedDateTime.time)}")
                         
                         // Show waypoint prices if applicable
-                        if (!noWaypoints && (route.waypoints.isNotEmpty() || customWaypoints.isNotEmpty())) {
-                            if (customWaypoints.isNotEmpty()) {
-                                customWaypoints.sortedBy { it.order }.forEachIndexed { index, waypoint ->
-                                    val location = availableLocations.find { it.id == waypoint.location_id }
-                                    Text("Waypoint ${index + 1}: ${location?.custom_name ?: location?.google_place_name ?: "Unknown"} - ${waypoint.price} RWF")
-                                }
-                            } else {
-                                route.waypoints.sortedBy { it.order }.forEach { waypoint ->
-                                    Text("Waypoint ${waypoint.order + 1}: ${waypoint.location.custom_name ?: waypoint.location.google_place_name} - ${waypoint.price} RWF")
-                                }
+                        if (!noWaypoints && unifiedWaypoints.isNotEmpty()) {
+                            unifiedWaypoints.sortedBy { it.order }.forEachIndexed { index, waypoint ->
+                                Text("Waypoint ${index + 1}: ${waypoint.location.custom_name ?: waypoint.location.google_place_name} - ${waypoint.price?.let { "$it RWF" } ?: "N/A"}")
                             }
                         }
                         
@@ -1926,37 +1742,48 @@ private fun CreateTripTab(
                                 return@launch
                             }
 
-                            // Validate custom waypoints only if they exist and no_waypoints is false
-                            if (!noWaypoints && customWaypoints.isNotEmpty()) {
-                                val invalidWaypoints = customWaypoints.filter { it.location_id == 0 }
+                            // Convert unifiedWaypoints to customWaypoints for API
+                            // Only include waypoints that are custom (edited) or all if route waypoints were modified
+                            val finalCustomWaypoints = if (!noWaypoints && unifiedWaypoints.isNotEmpty()) {
+                                // Check if all waypoints are from route and unchanged
+                                val allUnchanged = unifiedWaypoints.all { it.isFromRoute && 
+                                    it.price == selectedRoute?.waypoints?.find { wp -> wp.id == it.originalRouteWaypointId }?.price }
+                                
+                                if (allUnchanged) {
+                                    // All waypoints are unchanged from route, send empty list
+                                    emptyList()
+                                } else {
+                                    // Convert to CreateCustomWaypoint format
+                                    unifiedWaypoints.map { wp ->
+                                        CreateCustomWaypoint(
+                                            location_id = wp.location_id,
+                                            order = wp.order,
+                                            price = wp.price
+                                        )
+                                    }
+                                }
+                            } else {
+                                emptyList()
+                            }
+
+                            // Validate unified waypoints if they exist
+                            if (!noWaypoints && unifiedWaypoints.isNotEmpty()) {
+                                val invalidWaypoints = unifiedWaypoints.filter { it.location_id == 0 }
                                 if (invalidWaypoints.isNotEmpty()) {
                                     activity.showErrorToast(
-                                        message = "All custom waypoints must have a valid location selected.",
+                                        message = "All waypoints must have a valid location.",
                                         title = "Invalid Waypoints"
                                     )
                                     isCreatingTrip = false
                                     return@launch
                                 }
 
-                                // Check if any custom waypoint is missing a price
-                                val waypointsWithoutPrice = customWaypoints.filter { it.price == null || it.price <= 0.0 }
+                                // Check if any waypoint is missing a price
+                                val waypointsWithoutPrice = unifiedWaypoints.filter { it.price == null || it.price <= 0.0 }
                                 if (waypointsWithoutPrice.isNotEmpty()) {
                                     activity.showErrorToast(
-                                        message = "All custom waypoints must have a valid price. Please complete the pricing for all waypoints.",
+                                        message = "All waypoints must have a valid price. Please complete the pricing for all waypoints.",
                                         title = "Incomplete Waypoint Data"
-                                    )
-                                    isCreatingTrip = false
-                                    return@launch
-                                }
-                            }
-
-                            // Check if route has default waypoints without prices (only if not using custom waypoints)
-                            if (!noWaypoints && customWaypoints.isEmpty() && displayRoute?.waypoints?.isNotEmpty() == true) {
-                                val waypointsWithoutPrice = displayRoute!!.waypoints.filter { it.price <= 0.0 }
-                                if (waypointsWithoutPrice.isNotEmpty()) {
-                                    activity.showErrorToast(
-                                        message = "Route has waypoints without prices. Please add custom waypoints with proper pricing or contact support.",
-                                        title = "Incomplete Waypoint Pricing"
                                     )
                                     isCreatingTrip = false
                                     return@launch
@@ -1971,7 +1798,7 @@ private fun CreateTripTab(
                                 connection_mode = "ONLINE", // Always online
                                 notes = notes.takeIf { it.isNotBlank() },
                                 is_reversed = isReversed,
-                                custom_waypoints = if (noWaypoints) emptyList() else customWaypoints,
+                                custom_waypoints = finalCustomWaypoints,
                                 no_waypoints = noWaypoints
                             )
 
@@ -1979,7 +1806,7 @@ private fun CreateTripTab(
                                 is RemoteResult.Success -> {
                                     val tripType = when {
                                         noWaypoints -> "direct trip (no waypoints)"
-                                        customWaypoints.isNotEmpty() -> "trip with ${customWaypoints.size} custom waypoints"
+                                        finalCustomWaypoints.isNotEmpty() -> "trip with ${finalCustomWaypoints.size} waypoints"
                                         isReversed -> "reversed route trip"
                                         else -> "standard route trip"
                                     }
@@ -1995,6 +1822,7 @@ private fun CreateTripTab(
                                     notes = ""
                                     isReversed = false
                                     customWaypoints = emptyList()
+                                    unifiedWaypoints = emptyList()
                                     noWaypoints = false
                                     tripPrice = ""
                                     selectedDateTime = java.util.Calendar.getInstance().apply {
@@ -2033,32 +1861,36 @@ private fun CreateTripTab(
 @Composable
 private fun DateTimePickerSection(
     selectedDateTime: java.util.Calendar,
-    onDateTimeChanged: (java.util.Calendar) -> Unit
+    onDateTimeChanged: (java.util.Calendar) -> Unit,
+    onDateTimeConfirmed: () -> Unit,
+    enabled: Boolean = true,
+    isCreatingTrip: Boolean = false
 ) {
     val dateTimeFormatter = SimpleDateFormat("MMM dd, yyyy 'at' HH:mm", Locale.getDefault())
     var showDateTimePicker by remember { mutableStateOf(false) }
 
-    Column {
-        Text(
-            text = "Departure Date & Time",
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Medium
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Single Date-Time Picker Button
-        OutlinedButton(
-            onClick = { showDateTimePicker = true },
-            modifier = Modifier.fillMaxWidth()
+    // Styled as Create Trip button
+    Button(
+        onClick = { showDateTimePicker = true },
+        modifier = Modifier.fillMaxWidth(),
+        enabled = enabled && !isCreatingTrip
+    ) {
+        if (isCreatingTrip) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                color = MaterialTheme.colorScheme.onPrimary
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text("📅 🕐")
-                Text(dateTimeFormatter.format(selectedDateTime.time))
-            }
+            Text("📅 🕐", color = MaterialTheme.colorScheme.onPrimary)
+            Text(
+                text = dateTimeFormatter.format(selectedDateTime.time),
+                color = MaterialTheme.colorScheme.onPrimary
+            )
         }
     }
 
@@ -2069,6 +1901,8 @@ private fun DateTimePickerSection(
             onDateTimeSelected = { newDateTime ->
                 onDateTimeChanged(newDateTime)
                 showDateTimePicker = false
+                // After confirming date/time selection, trigger validation and confirmation
+                onDateTimeConfirmed()
             },
             onDismiss = { showDateTimePicker = false }
         )
@@ -2378,6 +2212,156 @@ private fun DateTimePickerDialog(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+private fun UnifiedWaypointTable(
+    unifiedWaypoints: List<UnifiedWaypoint>,
+    onPriceChanged: (Int, Double?) -> Unit,
+    onDelete: (Int) -> Unit,
+    onMoveUp: (Int) -> Unit,
+    onMoveDown: (Int) -> Unit,
+    selectedRoute: SaveRouteResponse?,
+    onRevertToRoute: () -> Unit
+) {
+    val routeHadWaypoints = selectedRoute?.waypoints?.isNotEmpty() == true
+    val showRevertButton = routeHadWaypoints && unifiedWaypoints.isEmpty()
+    
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Waypoints",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (showRevertButton) {
+                Button(
+                    onClick = onRevertToRoute,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Revert to Route Waypoints")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            if (unifiedWaypoints.isEmpty()) {
+                Text(
+                    text = if (routeHadWaypoints) 
+                        "All waypoints have been removed. Click 'Revert to Route Waypoints' to restore them."
+                    else
+                        "No waypoints. Use the + button to add waypoints.",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 16.dp)
+                )
+            } else {
+                val sortedWaypoints = unifiedWaypoints.sortedBy { it.order }
+                sortedWaypoints.forEachIndexed { sortedIndex, waypoint ->
+                    val actualIndex = unifiedWaypoints.indexOf(waypoint)
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (waypoint.isFromRoute) 
+                                MaterialTheme.colorScheme.primaryContainer
+                            else 
+                                MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = waypoint.location.custom_name ?: waypoint.location.google_place_name,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (waypoint.isFromRoute)
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        else
+                                            MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "Order: ${waypoint.order + 1}",
+                                        fontSize = 12.sp,
+                                        color = if (waypoint.isFromRoute)
+                                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                        else
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    val sortedIndex = sortedWaypoints.indexOf(waypoint)
+                                    if (sortedIndex > 0) {
+                                        IconButton(
+                                            onClick = { onMoveUp(actualIndex) },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Text("↑", fontSize = 14.sp)
+                                        }
+                                    }
+                                    if (sortedIndex < sortedWaypoints.size - 1) {
+                                        IconButton(
+                                            onClick = { onMoveDown(actualIndex) },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Text("↓", fontSize = 14.sp)
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = { onDelete(actualIndex) },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "Delete",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            OutlinedTextField(
+                                value = waypoint.price?.toString() ?: "",
+                                onValueChange = { newPrice ->
+                                    val filtered = newPrice.filter { it.isDigit() || it == '.' }
+                                    if (filtered.count { it == '.' } <= 1) {
+                                        val price = if (filtered.isBlank()) null else filtered.toDoubleOrNull()
+                                        onPriceChanged(actualIndex, price)
+                                    }
+                                },
+                                label = { Text("Price (RWF)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                placeholder = { Text("Enter price") },
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Decimal
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 private fun CustomWaypointCard(
     waypoint: CreateCustomWaypoint,
     index: Int,
@@ -2468,13 +2452,21 @@ private fun CustomWaypointCard(
             OutlinedTextField(
                 value = waypoint.price?.toString() ?: "",
                 onValueChange = { newPrice ->
-                    val price = if (newPrice.isBlank()) null else newPrice.toDoubleOrNull()
-                    onPriceChanged(price)
+                    // Only allow numbers and at most one decimal point
+                    val filtered = newPrice.filter { it.isDigit() || it == '.' }
+                    // Ensure only one decimal point
+                    if (filtered.count { it == '.' } <= 1) {
+                        val price = if (filtered.isBlank()) null else filtered.toDoubleOrNull()
+                        onPriceChanged(price)
+                    }
                 },
                 label = { Text("Price (RWF) - Optional") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                placeholder = { Text("Leave empty for default pricing") }
+                placeholder = { Text("Leave empty for default pricing") },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Decimal
+                )
             )
         }
     }
