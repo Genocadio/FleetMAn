@@ -2,6 +2,7 @@ package com.gocavgo.fleetman.ui.components
 
 import android.app.Activity
 import android.content.Context
+import com.gocavgo.fleetman.ui.components.ActivityTracker
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
@@ -73,7 +74,8 @@ data class ToastConfig(
     val duration: Long = 4000L,
     val position: ToastPosition = ToastPosition.TOP_RIGHT,
     val dismissible: Boolean = true,
-    val action: ToastAction? = null
+    val action: ToastAction? = null,
+    val onClick: (() -> Unit)? = null // Click handler for entire toast
 )
 
 /**
@@ -107,8 +109,14 @@ object ToastManager {
      * Show a toast from anywhere in the app (including non-Compose functions)
      */
     fun show(context: Context, config: ToastConfig) {
-        // Try to find the current activity and show toast there
-        val activity = findCurrentActivity(context)
+        // First try to get tracked current activity
+        var activity = ActivityTracker.getCurrentActivity()
+        
+        // If not found, try to find from context
+        if (activity == null) {
+            activity = findCurrentActivity(context)
+        }
+        
         if (activity != null) {
             showInActivity(activity, config)
         } else {
@@ -292,9 +300,13 @@ private class ToastView(
 
         addView(composeView)
         
-        // Add click listener for dismissible toasts
-        if (config.dismissible) {
-            setOnClickListener { dismiss() }
+        // Add click listener - onClick takes precedence over dismiss
+        setOnClickListener {
+            if (config.onClick != null) {
+                config.onClick?.invoke()
+            } else if (config.dismissible) {
+                dismiss()
+            }
         }
     }
 

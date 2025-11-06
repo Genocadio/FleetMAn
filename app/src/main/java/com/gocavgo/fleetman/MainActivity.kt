@@ -1,11 +1,16 @@
 package com.gocavgo.fleetman
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -37,11 +42,25 @@ import com.gocavgo.fleetman.service.RemoteResult
 import com.gocavgo.fleetman.settings.VehicleSettingsActivity
 import com.gocavgo.fleetman.trips.CreateTripActivity
 import com.gocavgo.fleetman.ui.theme.FleetManTheme
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var credentialsManager: CredentialsManager
     private lateinit var remoteDataManager: RemoteDataManager
+
+    // Permission launcher for notification permission
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            Log.d("MainActivity", "Notification permission granted")
+            // FCM SDK (and your app) can post notifications.
+        } else {
+            Log.d("MainActivity", "Notification permission denied")
+            // TODO: Inform user that your app will not show notifications.
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,6 +76,12 @@ class MainActivity : ComponentActivity() {
             finish()
             return
         }
+
+        // Request notification permission for Android 13+
+        askNotificationPermission()
+
+        // Subscribe to FCM topics
+        subscribeToFCMTopics()
 
         setContent {
             FleetManTheme {
@@ -436,6 +461,68 @@ class MainActivity : ComponentActivity() {
         }
     }
     
+    /**
+     * Requests notification permission for Android 13+ (API 33+)
+     */
+    private fun askNotificationPermission() {
+        // This is only necessary for API level >= 33 (TIRAMISU)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            ) {
+                // FCM SDK (and your app) can post notifications.
+                Log.d("MainActivity", "Notification permission already granted")
+            } else if (shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
+                // TODO: display an educational UI explaining to the user the features that will be enabled
+                //       by them granting the POST_NOTIFICATION permission. This UI should provide the user
+                //       "OK" and "No thanks" buttons. If the user selects "OK," directly request the permission.
+                //       If the user selects "No thanks," allow the user to continue without notifications.
+                Log.d("MainActivity", "Should show rationale for notification permission")
+                // For now, directly request the permission
+                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                // Directly ask for the permission
+                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
+    /**
+     * Subscribe to FCM topics: global "tripsupdates" and company-specific "tripsupdates_$companyId"
+     * Note: FCM topic names must match [a-zA-Z0-9-_.~%]{1,900}, so we use underscore instead of slash
+     */
+    private fun subscribeToFCMTopics() {
+        val globalTopic = "tripsupdates"
+        
+        // Subscribe to global topic
+        FirebaseMessaging.getInstance().subscribeToTopic(globalTopic)
+            .addOnCompleteListener { task ->
+                if (task.isSuccessful) {
+                    Log.d("MainActivity", "Subscribed to topic: $globalTopic")
+                } else {
+                    Log.e("MainActivity", "Failed to subscribe to topic: $globalTopic", task.exception)
+                }
+            }
+
+        // Subscribe to company-specific topic
+        val companyId = credentialsManager.getCompanyId()
+        if (companyId > 0) {
+            val companyTopic = "${globalTopic}_$companyId"
+            FirebaseMessaging.getInstance().subscribeToTopic(companyTopic)
+                .addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        Log.d("MainActivity", "Subscribed to topic: $companyTopic")
+                    } else {
+                        Log.e("MainActivity", "Failed to subscribe to topic: $companyTopic", task.exception)
+                    }
+                }
+        } else {
+            Log.d("MainActivity", "Company ID not available, skipping company-specific topic subscription")
+        }
+    }
+
     /**
      * Extracts initials from a user name.
      * Rules:

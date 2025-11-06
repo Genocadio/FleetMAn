@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "730587159735",
+    "project_id": "gocavgonotices",
+    "storage_bucket": "gocavgonotices.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:730587159735:android:27f8a1feb874d3b65d8132",
+        "android_client_info": {
+          "package_name": "com.gocavgo.fleetman"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyATUCBIBgRuFMitKZKkdDsOV6c8HTkkKJw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

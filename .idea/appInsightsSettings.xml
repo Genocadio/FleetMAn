@@ -8,10 +8,10 @@
             <InsightsFilterSettings>
               <option name="connection">
                 <ConnectionSetting>
-                  <option name="appId" value="PLACEHOLDER" />
-                  <option name="mobileSdkAppId" value="" />
-                  <option name="projectId" value="" />
-                  <option name="projectNumber" value="" />
+                  <option name="appId" value="com.gocavgo.fleetman" />
+                  <option name="mobileSdkAppId" value="1:730587159735:android:27f8a1feb874d3b65d8132" />
+                  <option name="projectId" value="gocavgonotices" />
+                  <option name="projectNumber" value="730587159735" />
                 </ConnectionSetting>
               </option>
               <option name="signal" value="SIGNAL_UNSPECIFIED" />
