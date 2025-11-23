@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
 import com.google.accompanist.swiperefresh.SwipeRefresh
 import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
@@ -28,6 +29,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.lifecycle.lifecycleScope
@@ -241,59 +244,109 @@ private fun SearchableRouteDropdown(
                     showSuggestions = it.isNotBlank()
                 },
                 label = { Text("Search Routes") },
-                placeholder = { Text(RouteSearchParser.getPlaceholderText(searchFilters)) },
+                placeholder = { Text("Type to search routes...") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                interactionSource = interactionSource
+                interactionSource = interactionSource,
+                trailingIcon = {
+                    if (isSearching) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
+                }
             )
             
             // Update suggestions visibility based on focus and text
             LaunchedEffect(isFocused, searchText) {
-                showSuggestions = isFocused && (searchText.isNotBlank() || routes.isNotEmpty())
+                showSuggestions = isFocused && searchText.isNotBlank()
             }
 
-            // Search status indicator
-            if (searchText.isNotBlank() && searchFilters != RouteSearchFilters()) {
+            // Auto-suggestions dropdown - position below input field
+            if (showSuggestions && (filteredRoutes.isNotEmpty() || isSearching)) {
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .offset(y = 56.dp)
-                        .zIndex(8f), // Lower than suggestions but above other content
+                        .offset(y = 56.dp) // Position below the input field
+                        .zIndex(100f), // Higher z-index to appear above Card boundaries
+                    elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    )
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    shape = RoundedCornerShape(12.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 300.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp)
                     ) {
-                        Text(
-                            text = "🔍 ${RouteSearchParser.getSearchDescription(searchFilters)}",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
+                        if (isSearching) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                                    Text("Searching routes...")
+                                }
+                            }
+                        } else if (filteredRoutes.isEmpty()) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = if (searchText.isBlank()) 
+                                            "No routes available. Try searching for specific routes."
+                                        else 
+                                            "No routes found matching your search",
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        } else {
+                            items(filteredRoutes) { route ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(
+                                                text = "${route.origin.custom_name ?: route.origin.google_place_name} → ${route.destination.custom_name ?: route.destination.google_place_name}",
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Normal
+                                            )
+                                            Text(
+                                                text = "Route ID: ${route.id} | Distance: ${route.distance_meters}m | Duration: ${route.estimated_duration_seconds}s",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            if (route.city_route) {
+                                                Text(
+                                                    text = "City Route",
+                                                    fontSize = 10.sp,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    fontWeight = FontWeight.Medium
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onClick = {
+                                        onRouteSelected(route)
+                                        searchText = ""
+                                        showSuggestions = false
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
-            }
-
-            // True popup suggestions - appears outside card boundaries
-            if (showSuggestions && (filteredRoutes.isNotEmpty() || isSearching)) {
-                // This will be rendered outside the card using a separate composable
-                RouteSearchPopup(
-                    searchText = searchText,
-                    searchFilters = searchFilters,
-                    filteredRoutes = filteredRoutes,
-                    isSearching = isSearching,
-                    onRouteSelected = { route ->
-                        onRouteSelected(route)
-                        searchText = ""
-                        showSuggestions = false
-                    },
-                    onDismiss = { showSuggestions = false }
-                )
             }
         }
     } else {
@@ -560,156 +613,6 @@ private fun SearchableLocationDropdown(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RouteSearchPopup(
-    searchText: String,
-    searchFilters: RouteSearchFilters,
-    filteredRoutes: List<SaveRouteResponse>,
-    isSearching: Boolean,
-    onRouteSelected: (SaveRouteResponse) -> Unit,
-    onDismiss: () -> Unit
-) {
-    // This popup renders outside the card boundaries
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .zIndex(100f) // Very high z-index to appear over everything
-    ) {
-        // Semi-transparent overlay to catch clicks outside
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clickable { onDismiss() }
-        ) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = Color.Black.copy(alpha = 0.3f)
-            ) {}
-        }
-        
-        // Popup content positioned at the top
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-                .offset(y = 100.dp), // Position below the search field
-            shadowElevation = 16.dp,
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 400.dp) // Scrollable height
-            ) {
-                // Header
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Search Results",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    TextButton(onClick = onDismiss) {
-                        Text("✕", fontSize = 18.sp)
-                    }
-                }
-                
-                Divider()
-                
-                // Scrollable content
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentPadding = PaddingValues(vertical = 8.dp)
-                ) {
-                    if (isSearching) {
-                        item {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp))
-                                Text("Searching routes...")
-                            }
-                        }
-                    } else if (filteredRoutes.isEmpty()) {
-                        item {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    text = if (searchText.isBlank()) 
-                                        "No routes available. Try searching for specific routes."
-                                    else 
-                                        "No routes found matching your search",
-                                    fontSize = 14.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    } else {
-                        items(filteredRoutes) { route ->
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 8.dp, vertical = 2.dp),
-                                color = Color.Transparent
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            onRouteSelected(route)
-                                        }
-                                        .padding(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = "${route.origin.custom_name ?: route.origin.google_place_name} → ${route.destination.custom_name ?: route.destination.google_place_name}",
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.Normal,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            text = "Route ID: ${route.id} | Distance: ${route.distance_meters}m | Duration: ${route.estimated_duration_seconds}s",
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        if (route.city_route) {
-                                            Text(
-                                                text = "City Route",
-                                                fontSize = 10.sp,
-                                                color = MaterialTheme.colorScheme.primary,
-                                                fontWeight = FontWeight.Medium
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -1150,6 +1053,7 @@ private fun CreateTripTab(
     var isLoadingLocations by remember { mutableStateOf(false) }
     var isCreatingTrip by remember { mutableStateOf(false) }
     var showConfirmationDialog by remember { mutableStateOf(false) }
+    var showRouteSearchInfoDialog by remember { mutableStateOf(false) }
 
     // Function to handle reverse route changes
     fun onReverseRouteChanged(reversed: Boolean) {
@@ -1399,16 +1303,38 @@ private fun CreateTripTab(
 
             // Route Selection with Search
             item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp)) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Text(
                             text = "Select Route",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold
                         )
+                        
+                        IconButton(
+                            onClick = { showRouteSearchInfoDialog = true },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = "Route search help",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
+                    Box(modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)) {
                         SearchableRouteDropdown(
                             routes = routes,
                             selectedRoute = selectedRoute,
@@ -1434,143 +1360,145 @@ private fun CreateTripTab(
                             lifecycleScope = lifecycleScope,
                             activity = activity
                         )
-
-
-                        // Show selected route details (using displayRoute for reversed view)
-                        displayRoute?.let { route ->
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer
-                                )
+                    }
+                }
+            }
+            
+            // Show selected route details (using displayRoute for reversed view)
+            displayRoute?.let { route ->
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
+                                Text(
+                                    text = "Route Details",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                                
+                                if (isReversed) {
+                                    Card(
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.primary
+                                        )
                                     ) {
                                         Text(
-                                            text = "Route Details",
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
-                                        
-                                        if (isReversed) {
-                                            Card(
-                                                colors = CardDefaults.cardColors(
-                                                    containerColor = MaterialTheme.colorScheme.primary
-                                                )
-                                            ) {
-                                                Text(
-                                                    text = "REVERSED",
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                                    fontSize = 10.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = MaterialTheme.colorScheme.onPrimary
-                                                )
-                                            }
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    
-                                    // Compact route info in rows
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = "From: ${route.origin.custom_name ?: route.origin.google_place_name}",
-                                                fontSize = 12.sp,
-                                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                                            )
-                                            Text(
-                                                text = "To: ${route.destination.custom_name ?: route.destination.google_place_name}",
-                                                fontSize = 12.sp,
-                                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                                            )
-                                        }
-                                        Column(
-                                            horizontalAlignment = Alignment.End
-                                        ) {
-                                            Text(
-                                                text = "${route.distance_meters}m",
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Medium,
-                                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                                            )
-                                            Text(
-                                                text = "${route.estimated_duration_seconds}s",
-                                                fontSize = 12.sp,
-                                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                                            )
-                                        }
-                                    }
-                                    
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = if (route.city_route) "City Route" else "Intercity Route",
-                                            fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                    }
-                                    
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    
-                                    // Editable Trip Price
-                                    OutlinedTextField(
-                                        value = tripPrice,
-                                        onValueChange = { newValue ->
-                                            // Only allow numbers and at most one decimal point
-                                            val filtered = newValue.filter { it.isDigit() || it == '.' }
-                                            // Ensure only one decimal point
-                                            if (filtered.count { it == '.' } <= 1) {
-                                                tripPrice = filtered
-                                            }
-                                        },
-                                        label = { Text("Trip Price (RWF)") },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        singleLine = true,
-                                        placeholder = { Text("Enter trip price") },
-                                        keyboardOptions = KeyboardOptions(
-                                            keyboardType = KeyboardType.Decimal
-                                        )
-                                    )
-                                    
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    
-                                    // Reverse Route Toggle
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Checkbox(
-                                            checked = isReversed,
-                                            onCheckedChange = { onReverseRouteChanged(it) }
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = "Reverse Route",
-                                            fontSize = 14.sp,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            text = "REVERSED",
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onPrimary
                                         )
                                     }
                                 }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            // Compact route info in rows
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "From: ${route.origin.custom_name ?: route.origin.google_place_name}",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                    Text(
+                                        text = "To: ${route.destination.custom_name ?: route.destination.google_place_name}",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                }
+                                Column(
+                                    horizontalAlignment = Alignment.End
+                                ) {
+                                    Text(
+                                        text = "${route.distance_meters}m",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                    Text(
+                                        text = "${route.estimated_duration_seconds}s",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                }
+                            }
+                            
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (route.city_route) "City Route" else "Intercity Route",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            // Editable Trip Price
+                            OutlinedTextField(
+                                value = tripPrice,
+                                onValueChange = { newValue ->
+                                    // Only allow numbers and at most one decimal point
+                                    val filtered = newValue.filter { it.isDigit() || it == '.' }
+                                    // Ensure only one decimal point
+                                    if (filtered.count { it == '.' } <= 1) {
+                                        tripPrice = filtered
+                                    }
+                                },
+                                label = { Text("Trip Price (RWF)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                placeholder = { Text("Enter trip price") },
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Decimal
+                                )
+                            )
+                            
+                            Spacer(modifier = Modifier.height(12.dp))
+                            
+                            // Reverse Route Toggle
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = isReversed,
+                                    onCheckedChange = { onReverseRouteChanged(it) }
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Reverse Route",
+                                    fontSize = 14.sp,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
                             }
                         }
                     }
                 }
             }
-
 
             // Unified Waypoint Table (only show if route selected)
             if (selectedRoute != null) {
@@ -1664,6 +1592,56 @@ private fun CreateTripTab(
                         selectedLocationForWaypoint = null
                     }) {
                         Text("Cancel")
+                    }
+                }
+            )
+        }
+        
+        // Route search info dialog
+        if (showRouteSearchInfoDialog) {
+            AlertDialog(
+                onDismissRequest = { showRouteSearchInfoDialog = false },
+                title = { Text("Route Search Help") },
+                text = {
+                    Column(
+                        modifier = Modifier.padding(vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "You can search routes using the following methods:",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        
+                        Text(
+                            text = "• Origin only: Type the location name (e.g., \"kigali\")",
+                            fontSize = 13.sp
+                        )
+                        
+                        Text(
+                            text = "• Destination only: Prefix with ! (e.g., \"!musanze\")",
+                            fontSize = 13.sp
+                        )
+                        
+                        Text(
+                            text = "• Origin + Destination: Separate with comma (e.g., \"kigali, musanze\")",
+                            fontSize = 13.sp
+                        )
+                        
+                        Text(
+                            text = "• Swap origin/destination: Prefix first location with ! in pair (e.g., \"!kigali, musanze\")",
+                            fontSize = 13.sp
+                        )
+                        
+                        Text(
+                            text = "• City route filter: Add @c for city routes or @p for intercity routes (e.g., \"@c kigali\" or \"kigali, musanze @p\")",
+                            fontSize = 13.sp
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showRouteSearchInfoDialog = false }) {
+                        Text("Got it")
                     }
                 }
             )
@@ -1866,12 +1844,63 @@ private fun DateTimePickerSection(
     enabled: Boolean = true,
     isCreatingTrip: Boolean = false
 ) {
+    // Helper function to format date with "Today", "Tomorrow", or day name
+    fun formatDateWithDayName(dateTime: java.util.Calendar): String {
+        // Get today at midnight
+        val today = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        
+        // Get selected date at midnight
+        val selectedDay = java.util.Calendar.getInstance().apply {
+            timeInMillis = dateTime.timeInMillis
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        
+        // Get tomorrow at midnight
+        val tomorrow = java.util.Calendar.getInstance().apply {
+            timeInMillis = today.timeInMillis
+            add(java.util.Calendar.DAY_OF_YEAR, 1)
+        }
+        
+        val dayName: String = when {
+            selectedDay.get(java.util.Calendar.DAY_OF_YEAR) == today.get(java.util.Calendar.DAY_OF_YEAR) &&
+            selectedDay.get(java.util.Calendar.YEAR) == today.get(java.util.Calendar.YEAR) -> {
+                "Today"
+            }
+            selectedDay.get(java.util.Calendar.DAY_OF_YEAR) == tomorrow.get(java.util.Calendar.DAY_OF_YEAR) &&
+            selectedDay.get(java.util.Calendar.YEAR) == tomorrow.get(java.util.Calendar.YEAR) -> {
+                "Tomorrow"
+            }
+            else -> {
+                // Use day name for other dates
+                SimpleDateFormat("EEEE", Locale.getDefault()).format(dateTime.time)
+            }
+        }
+        
+        val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+        val dateFormat = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
+        
+        return "$dayName, ${dateFormat.format(dateTime.time)} at ${timeFormat.format(dateTime.time)}"
+    }
+    
     val dateTimeFormatter = SimpleDateFormat("MMM dd, yyyy 'at' HH:mm", Locale.getDefault())
     var showDateTimePicker by remember { mutableStateOf(false) }
+    // Track dialog open count to force recreation each time it opens
+    var dialogOpenCount by remember { mutableIntStateOf(0) }
 
     // Styled as Create Trip button
     Button(
-        onClick = { showDateTimePicker = true },
+        onClick = { 
+            showDateTimePicker = true
+            dialogOpenCount++ // Increment to force recreation
+        },
         modifier = Modifier.fillMaxWidth(),
         enabled = enabled && !isCreatingTrip
     ) {
@@ -1888,24 +1917,42 @@ private fun DateTimePickerSection(
         ) {
             Text("📅 🕐", color = MaterialTheme.colorScheme.onPrimary)
             Text(
-                text = dateTimeFormatter.format(selectedDateTime.time),
+                text = formatDateWithDayName(selectedDateTime),
                 color = MaterialTheme.colorScheme.onPrimary
             )
         }
     }
 
     // Combined Date-Time Picker Dialog
+    // Use dialogOpenCount as key to force complete recreation each time dialog opens
+    // This ensures DatePickerState is always fresh with today's date, not stale from previous opens
     if (showDateTimePicker) {
-        DateTimePickerDialog(
-            selectedDateTime = selectedDateTime,
-            onDateTimeSelected = { newDateTime ->
-                onDateTimeChanged(newDateTime)
-                showDateTimePicker = false
-                // After confirming date/time selection, trigger validation and confirmation
-                onDateTimeConfirmed()
-            },
-            onDismiss = { showDateTimePicker = false }
-        )
+        key(dialogOpenCount) { // Force recreation with unique key each time dialog opens
+            // Calculate today's date here to ensure it's current when dialog opens
+            val currentToday = java.util.Calendar.getInstance().apply {
+                set(java.util.Calendar.HOUR_OF_DAY, 0)
+                set(java.util.Calendar.MINUTE, 0)
+                set(java.util.Calendar.SECOND, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }.timeInMillis
+            
+            Log.d("DateTimePicker", "=== DIALOG OPENING ===")
+            Log.d("DateTimePicker", "Dialog key: $dialogOpenCount")
+            Log.d("DateTimePicker", "Current today: ${SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(java.util.Calendar.getInstance().apply { timeInMillis = currentToday }.time)}")
+            
+            DateTimePickerDialog(
+                selectedDateTime = selectedDateTime,
+                dialogKey = dialogOpenCount, // Pass unique key to force state recreation
+                todayDateMillis = currentToday, // Pass current date
+                onDateTimeSelected = { newDateTime ->
+                    onDateTimeChanged(newDateTime)
+                    showDateTimePicker = false
+                    // After confirming date/time selection, trigger validation and confirmation
+                    onDateTimeConfirmed()
+                },
+                onDismiss = { showDateTimePicker = false }
+            )
+        }
     }
 }
 
@@ -1914,9 +1961,57 @@ private fun DateTimePickerSection(
 @Composable
 private fun DateTimePickerDialog(
     selectedDateTime: java.util.Calendar,
+    dialogKey: Int, // Unique key to force state recreation each time dialog opens
+    todayDateMillis: Long, // Current date in millis to ensure correct initialization
     onDateTimeSelected: (java.util.Calendar) -> Unit,
     onDismiss: () -> Unit
 ) {
+    // Helper function to format date with "Today", "Tomorrow", or day name
+    fun formatDateWithDayName(dateTime: java.util.Calendar): String {
+        // Get today at midnight
+        val today = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        
+        // Get selected date at midnight
+        val selectedDay = java.util.Calendar.getInstance().apply {
+            timeInMillis = dateTime.timeInMillis
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        
+        // Get tomorrow at midnight
+        val tomorrow = java.util.Calendar.getInstance().apply {
+            timeInMillis = today.timeInMillis
+            add(java.util.Calendar.DAY_OF_YEAR, 1)
+        }
+        
+        val dayName: String = when {
+            selectedDay.get(java.util.Calendar.DAY_OF_YEAR) == today.get(java.util.Calendar.DAY_OF_YEAR) &&
+            selectedDay.get(java.util.Calendar.YEAR) == today.get(java.util.Calendar.YEAR) -> {
+                "Today"
+            }
+            selectedDay.get(java.util.Calendar.DAY_OF_YEAR) == tomorrow.get(java.util.Calendar.DAY_OF_YEAR) &&
+            selectedDay.get(java.util.Calendar.YEAR) == tomorrow.get(java.util.Calendar.YEAR) -> {
+                "Tomorrow"
+            }
+            else -> {
+                // Use day name for other dates
+                SimpleDateFormat("EEEE", Locale.getDefault()).format(dateTime.time)
+            }
+        }
+        
+        val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+        val dateFormat = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
+        
+        return "$dayName, ${dateFormat.format(dateTime.time)} at ${timeFormat.format(dateTime.time)}"
+    }
+    
     var currentTab by remember { mutableIntStateOf(0) } // Start with Time tab (0)
 
     // Initialize with current time rounded to next 5-minute interval
@@ -1935,27 +2030,152 @@ private fun DateTimePickerDialog(
         val nextInterval = ((minute / 5) + 1) * 5
         mutableIntStateOf(if (nextInterval >= 60) 0 else nextInterval)
     }
+    
+    // Date selection state - start with today
+    val currentDate = java.util.Calendar.getInstance()
+    var selectedMonth by remember { mutableIntStateOf(currentDate.get(java.util.Calendar.MONTH)) }
+    var selectedDay by remember { mutableIntStateOf(currentDate.get(java.util.Calendar.DAY_OF_MONTH)) }
+    var selectedYear by remember { mutableIntStateOf(currentDate.get(java.util.Calendar.YEAR)) }
+
+    // Use the passed todayDateMillis to ensure we're using the correct current date
+    // This is passed from parent to avoid any timing issues
+    val todayAtMidnight = todayDateMillis
+
+    // Log today's date
+    LaunchedEffect(Unit) {
+        val todayCal = java.util.Calendar.getInstance().apply {
+            timeInMillis = todayAtMidnight
+        }
+        Log.d("DateTimePicker", "=== DATE PICKER INITIALIZATION ===")
+        Log.d("DateTimePicker", "Today at midnight (millis): $todayAtMidnight")
+        Log.d("DateTimePicker", "Today date: ${SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(todayCal.time)}")
+        Log.d("DateTimePicker", "Today day of month: ${todayCal.get(java.util.Calendar.DAY_OF_MONTH)}")
+    }
 
     // Calculate the date based on selected time
     val calculatedDate = remember(selectedHour, selectedMinute) {
         val now = java.util.Calendar.getInstance()
+        val today = java.util.Calendar.getInstance().apply {
+            timeInMillis = todayAtMidnight
+        }
+        
+        // Create selected time on today's date
         val selectedTime = java.util.Calendar.getInstance().apply {
+            timeInMillis = today.timeInMillis
             set(java.util.Calendar.HOUR_OF_DAY, selectedHour)
             set(java.util.Calendar.MINUTE, selectedMinute)
             set(java.util.Calendar.SECOND, 0)
             set(java.util.Calendar.MILLISECOND, 0)
         }
 
-        // If selected time is before current time, use tomorrow
+        // If selected time on today has already passed, use tomorrow
         if (selectedTime.timeInMillis <= now.timeInMillis) {
             selectedTime.add(java.util.Calendar.DAY_OF_MONTH, 1)
         }
+        
+        // Log calculated date
+        Log.d("DateTimePicker", "Calculated date: ${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(selectedTime.time)}")
         selectedTime
     }
 
-    val datePickerState = rememberDatePickerState(
-        initialSelectedDateMillis = calculatedDate.timeInMillis
-    )
+    // CRITICAL FIX: Use mutableState to hold DatePickerState and explicitly recreate it
+    // when dialogKey changes. Since remember() with keys isn't working, we'll manage
+    // state recreation manually using LaunchedEffect.
+    var datePickerState by remember { 
+        mutableStateOf<DatePickerState?>(null)
+    }
+    
+    // Recreate DatePickerState when dialog opens (dialogKey changes)
+    LaunchedEffect(dialogKey) {
+        val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(
+            java.util.Calendar.getInstance().apply { timeInMillis = todayAtMidnight }.time
+        )
+        Log.d("DateTimePicker", "=== CREATING NEW DatePickerState (LaunchedEffect) ===")
+        Log.d("DateTimePicker", "Dialog key: $dialogKey")
+        Log.d("DateTimePicker", "Today for initialization: $todayStr")
+        Log.d("DateTimePicker", "Today millis: $todayAtMidnight")
+        
+        val newState = DatePickerState(
+            initialSelectedDateMillis = todayAtMidnight,
+            initialDisplayedMonthMillis = todayAtMidnight,
+            yearRange = IntRange(2020, 2100),
+            locale = Locale.getDefault()
+        )
+        
+        // Log immediately after creation
+        Log.d("DateTimePicker", "DatePickerState just created - selectedDateMillis: ${newState.selectedDateMillis}")
+        if (newState.selectedDateMillis != null) {
+            val createdDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(
+                java.util.Calendar.getInstance().apply { timeInMillis = newState.selectedDateMillis!! }.time
+            )
+            Log.d("DateTimePicker", "DatePickerState just created - actual selected date: $createdDate")
+            if (newState.selectedDateMillis != todayAtMidnight) {
+                Log.d("DateTimePicker", "CRITICAL ERROR: State created with WRONG date! Expected: $todayStr, Got: $createdDate")
+            } else {
+                Log.d("DateTimePicker", "SUCCESS: State created with CORRECT date: $todayStr")
+            }
+        }
+        
+        datePickerState = newState
+    }
+    
+    // Provide a non-null state (or create default if needed)
+    val finalDatePickerState = datePickerState ?: remember {
+        Log.d("DateTimePicker", "Creating fallback DatePickerState")
+        DatePickerState(
+            initialSelectedDateMillis = todayAtMidnight,
+            initialDisplayedMonthMillis = todayAtMidnight,
+            yearRange = IntRange(2020, 2100),
+            locale = Locale.getDefault()
+        )
+    }
+    
+    // Debug: Log dialogKey and todayAtMidnight during composition
+    SideEffect {
+        Log.d("DateTimePicker", "=== SIDEEFFECT (during composition) ===")
+        Log.d("DateTimePicker", "Dialog key: $dialogKey")
+        Log.d("DateTimePicker", "Today millis: $todayAtMidnight")
+        Log.d("DateTimePicker", "State selectedDateMillis: ${finalDatePickerState.selectedDateMillis}")
+    }
+    
+    // Log when dialog opens to verify correct date
+    LaunchedEffect(Unit) {
+        val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(
+            java.util.Calendar.getInstance().apply { timeInMillis = todayAtMidnight }.time
+        )
+        Log.d("DateTimePicker", "Dialog opened - today should be: $todayStr")
+        Log.d("DateTimePicker", "Dialog key in LaunchedEffect: $dialogKey")
+        
+        val selectedDate = finalDatePickerState.selectedDateMillis
+        if (selectedDate != null) {
+            val selectedStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(
+                java.util.Calendar.getInstance().apply { timeInMillis = selectedDate }.time
+            )
+            Log.d("DateTimePicker", "DatePicker selected date: $selectedStr")
+            
+            if (selectedDate < todayAtMidnight) {
+                Log.d("DateTimePicker", "ERROR: DatePicker still has stale date! This should not happen with LaunchedEffect fix.")
+            } else {
+                Log.d("DateTimePicker", "SUCCESS: DatePicker has correct date (today or future)")
+            }
+        }
+    }
+    
+    // Log date picker state
+    LaunchedEffect(finalDatePickerState.selectedDateMillis) {
+        val selectedDate = finalDatePickerState.selectedDateMillis
+        if (selectedDate != null) {
+            val selectedCal = java.util.Calendar.getInstance().apply {
+                timeInMillis = selectedDate
+            }
+            Log.d("DateTimePicker", "DatePicker selectedDateMillis: $selectedDate")
+            Log.d("DateTimePicker", "DatePicker selected date: ${SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(selectedCal.time)}")
+            Log.d("DateTimePicker", "DatePicker selected day of month: ${selectedCal.get(java.util.Calendar.DAY_OF_MONTH)}")
+        } else {
+            Log.d("DateTimePicker", "DatePicker selectedDateMillis: NULL")
+        }
+        Log.d("DateTimePicker", "DatePicker initialSelectedDateMillis was: $todayAtMidnight")
+    }
 
     // Hour options (0-23)
     val hourOptions = (0..23).map { String.format("%02d", it) }
@@ -1963,11 +2183,32 @@ private fun DateTimePickerDialog(
     // Minute options in 5-minute intervals
     val minuteOptions = (0..59 step 5).map { String.format("%02d", it) }
 
-    AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        title = { Text("Select Date & Time") },
-        text = {
-            Column {
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false
+        )
+    ) {
+        Card(
+            modifier = Modifier
+                .widthIn(min = 600.dp, max = 700.dp)
+                .fillMaxWidth(0.95f),
+            shape = MaterialTheme.shapes.extraLarge,
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp)
+            ) {
+                // Title
+                Text(
+                    text = "Select Date & Time",
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
                 // Tab Row - Time first, then Date
                 TabRow(selectedTabIndex = currentTab) {
                     Tab(
@@ -2080,79 +2321,217 @@ private fun DateTimePickerDialog(
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            // Show calculated date
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                                )
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text(
-                                        text = "Date will be:",
-                                        fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Text(
-                                        text = SimpleDateFormat(
-                                            "EEEE, MMM dd, yyyy",
-                                            Locale.getDefault()
-                                        ).format(calculatedDate.time),
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                    if (calculatedDate.get(java.util.Calendar.DAY_OF_YEAR) !=
-                                        java.util.Calendar.getInstance()
-                                            .get(java.util.Calendar.DAY_OF_YEAR)
-                                    ) {
-                                        Text(
-                                            text = "Tomorrow (selected time is past today)",
-                                            fontSize = 10.sp,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                }
-                            }
                         }
                     }
 
                     1 -> {
-                        // Date Picker (for manual override)
+                        // Date selection with Month and Day dropdowns
                         Column {
                             Text(
-                                text = "Override Date (Optional)",
+                                text = "Select Date",
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Medium
                             )
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Text(
-                                text = "Date is automatically set based on selected time. Use this to override.",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-
+                            
                             Spacer(modifier = Modifier.height(12.dp))
-
-                            DatePicker(
-                                state = datePickerState,
-                                modifier = Modifier.height(400.dp)
-                            )
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Month Dropdown
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Month", fontSize = 12.sp)
+                                    var monthExpanded by remember { mutableStateOf(false) }
+                                    
+                                    // Generate month options starting from current month
+                                    // Show next 12 months (wrapping to next year if needed)
+                                    // Store both month index and which year it belongs to
+                                    val monthOptions = remember {
+                                        val now = java.util.Calendar.getInstance()
+                                        val currentMonth = now.get(java.util.Calendar.MONTH)
+                                        val currentYear = now.get(java.util.Calendar.YEAR)
+                                        
+                                        val months = mutableListOf<Triple<Int, String, Int>>() // (monthIndex, name, year)
+                                        val monthNames = arrayOf(
+                                            "January", "February", "March", "April", "May", "June",
+                                            "July", "August", "September", "October", "November", "December"
+                                        )
+                                        
+                                        // Show next 12 months starting from current month
+                                        for (offset in 0 until 12) {
+                                            val monthIndex = (currentMonth + offset) % 12
+                                            // Determine which year: if month wraps (monthIndex < currentMonth), it's next year
+                                            val year = if (monthIndex < currentMonth) currentYear + 1 else currentYear
+                                            months.add(Triple(monthIndex, monthNames[monthIndex], year))
+                                        }
+                                        
+                                        months
+                                    }
+                                    
+                                    ExposedDropdownMenuBox(
+                                        expanded = monthExpanded,
+                                        onExpandedChange = { monthExpanded = it }
+                                    ) {
+                                        OutlinedTextField(
+                                            value = monthOptions.find { it.first == selectedMonth && it.third == selectedYear }?.second 
+                                                ?: monthOptions.find { it.first == selectedMonth }?.second ?: "",
+                                            onValueChange = { },
+                                            readOnly = true,
+                                            trailingIcon = {
+                                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = monthExpanded)
+                                            },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .menuAnchor()
+                                        )
+                                        
+                                        ExposedDropdownMenu(
+                                            expanded = monthExpanded,
+                                            onDismissRequest = { monthExpanded = false }
+                                        ) {
+                                            monthOptions.forEach { (monthIndex, monthName, year) ->
+                                                DropdownMenuItem(
+                                                    text = { 
+                                                        Text(if (year > java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)) {
+                                                            "$monthName ${year}"
+                                                        } else {
+                                                            monthName
+                                                        })
+                                                    },
+                                                    onClick = {
+                                                        val now = java.util.Calendar.getInstance()
+                                                        val currentMonth = now.get(java.util.Calendar.MONTH)
+                                                        val currentYear = now.get(java.util.Calendar.YEAR)
+                                                        
+                                                        // Use the year from the month option
+                                                        selectedYear = year
+                                                        selectedMonth = monthIndex
+                                                        
+                                                        // Reset day appropriately
+                                                        if (year == currentYear && monthIndex == currentMonth) {
+                                                            // Current month and year - set to today
+                                                            selectedDay = now.get(java.util.Calendar.DAY_OF_MONTH)
+                                                        } else {
+                                                            // Future month - start from day 1
+                                                            selectedDay = 1
+                                                        }
+                                                        monthExpanded = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                // Day Dropdown
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Day", fontSize = 12.sp)
+                                    var dayExpanded by remember { mutableStateOf(false) }
+                                    
+                                    // Generate day options based on selected month and year
+                                    val dayOptions = remember(selectedMonth, selectedYear) {
+                                        val now = java.util.Calendar.getInstance()
+                                        val currentMonth = now.get(java.util.Calendar.MONTH)
+                                        val currentDay = now.get(java.util.Calendar.DAY_OF_MONTH)
+                                        val currentYear = now.get(java.util.Calendar.YEAR)
+                                        
+                                        val days = mutableListOf<Pair<Int, String>>()
+                                        
+                                        // Get number of days in selected month
+                                        val daysInMonth = java.util.Calendar.getInstance().apply {
+                                            set(selectedYear, selectedMonth, 1)
+                                        }.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+                                        
+                                        // Determine start day
+                                        // If current month and year, start from today
+                                        // Otherwise, start from day 1
+                                        val startDay = if (selectedMonth == currentMonth && selectedYear == currentYear) {
+                                            currentDay
+                                        } else {
+                                            1
+                                        }
+                                        
+                                        val dayNames = arrayOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+                                        
+                                        for (day in startDay..daysInMonth) {
+                                            val tempCal = java.util.Calendar.getInstance().apply {
+                                                set(selectedYear, selectedMonth, day)
+                                            }
+                                            val dayOfWeek = tempCal.get(java.util.Calendar.DAY_OF_WEEK)
+                                            val dayName = dayNames[dayOfWeek - 1]
+                                            days.add(Pair(day, "$dayName $day"))
+                                        }
+                                        
+                                        days
+                                    }
+                                    
+                                    // Update selectedDay if it's invalid for the current month
+                                    LaunchedEffect(selectedMonth, selectedYear) {
+                                        val daysInMonth = java.util.Calendar.getInstance().apply {
+                                            set(selectedYear, selectedMonth, 1)
+                                        }.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+                                        
+                                        val now = java.util.Calendar.getInstance()
+                                        val currentMonth = now.get(java.util.Calendar.MONTH)
+                                        val currentDay = now.get(java.util.Calendar.DAY_OF_MONTH)
+                                        val currentYear = now.get(java.util.Calendar.YEAR)
+                                        
+                                        if (selectedDay > daysInMonth) {
+                                            selectedDay = daysInMonth
+                                        } else if (selectedMonth == currentMonth && selectedYear == currentYear && selectedDay < currentDay) {
+                                            selectedDay = currentDay
+                                        }
+                                    }
+                                    
+                                    ExposedDropdownMenuBox(
+                                        expanded = dayExpanded,
+                                        onExpandedChange = { dayExpanded = it }
+                                    ) {
+                                        OutlinedTextField(
+                                            value = dayOptions.find { it.first == selectedDay }?.second ?: "",
+                                            onValueChange = { },
+                                            readOnly = true,
+                                            trailingIcon = {
+                                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = dayExpanded)
+                                            },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .menuAnchor()
+                                        )
+                                        
+                                        ExposedDropdownMenu(
+                                            expanded = dayExpanded,
+                                            onDismissRequest = { dayExpanded = false }
+                                        ) {
+                                            dayOptions.forEach { (dayNumber, dayLabel) ->
+                                                DropdownMenuItem(
+                                                    text = { Text(dayLabel) },
+                                                    onClick = {
+                                                        selectedDay = dayNumber
+                                                        dayExpanded = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Preview
-                val previewDateTime = java.util.Calendar.getInstance().apply {
-                    timeInMillis = datePickerState.selectedDateMillis ?: calculatedDate.timeInMillis
-                    set(java.util.Calendar.HOUR_OF_DAY, selectedHour)
-                    set(java.util.Calendar.MINUTE, selectedMinute)
-                    set(java.util.Calendar.SECOND, 0)
-                    set(java.util.Calendar.MILLISECOND, 0)
+                // Preview - combine selected date (month/day/year) with selected time
+                val previewDateTime = remember(selectedMonth, selectedDay, selectedYear, selectedHour, selectedMinute) {
+                    val selectedDate = java.util.Calendar.getInstance().apply {
+                        set(selectedYear, selectedMonth, selectedDay, selectedHour, selectedMinute, 0)
+                        set(java.util.Calendar.MILLISECOND, 0)
+                    }
+                    
+                    selectedDate
                 }
 
                 Card(
@@ -2167,46 +2546,45 @@ private fun DateTimePickerDialog(
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                         Text(
-                            text = SimpleDateFormat(
-                                "MMM dd, yyyy 'at' HH:mm",
-                                Locale.getDefault()
-                            ).format(previewDateTime.time),
+                            text = formatDateWithDayName(previewDateTime),
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
                 }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val finalDateTime = java.util.Calendar.getInstance().apply {
-                        timeInMillis =
-                            datePickerState.selectedDateMillis ?: calculatedDate.timeInMillis
-                        set(java.util.Calendar.HOUR_OF_DAY, selectedHour)
-                        set(java.util.Calendar.MINUTE, selectedMinute)
-                        set(java.util.Calendar.SECOND, 0)
-                        set(java.util.Calendar.MILLISECOND, 0)
+                
+                // Buttons
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancel")
                     }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            // Use selected date (month/day/year) with selected time
+                            val finalDateTime = java.util.Calendar.getInstance().apply {
+                                set(selectedYear, selectedMonth, selectedDay, selectedHour, selectedMinute, 0)
+                                set(java.util.Calendar.MILLISECOND, 0)
+                            }
 
-                    // Validate that the selected time is in the future
-                    val currentTime = java.util.Calendar.getInstance()
-                    if (finalDateTime.timeInMillis > currentTime.timeInMillis) {
-                        onDateTimeSelected(finalDateTime)
+                            // Validate that the selected time is in the future
+                            val now = java.util.Calendar.getInstance()
+                            if (finalDateTime.timeInMillis > now.timeInMillis) {
+                                onDateTimeSelected(finalDateTime)
+                            }
+                        }
+                    ) {
+                        Text("OK")
                     }
                 }
-            ) {
-                Text("OK")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
             }
         }
-    )
+    }
 }
 
 
